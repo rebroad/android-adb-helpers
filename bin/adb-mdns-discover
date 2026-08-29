@@ -1,0 +1,109 @@
+#!/data/data/com.termux/files/usr/bin/python
+"""Discover Android Wireless Debugging ADB services via mDNS."""
+
+import socket
+import struct
+import sys
+import time
+
+GROUP = "224.0.0.251"
+PORT = 5353
+SERVICES = {
+    "_adb-tls-pairing._tcp.local": "pairing",
+    "_adb-tls-connect._tcp.local": "connect",
+}
+
+
+def encode_name(name):
+    return b"".join(bytes([len(part)]) + part.encode() for part in name.split(".")) + b"\0"
+
+
+def read_name(packet, offset):
+    labels = []
+    jumped = False
+    end = offset
+    while True:
+        length = packet[offset]
+        if length == 0:
+            if not jumped:
+                end = offset + 1
+            return ".".join(labels), end
+        if length & 0xc0 == 0xc0:
+            pointer = ((length & 0x3f) << 8) | packet[offset + 1]
+            label, _ = read_name(packet, pointer)
+            labels.append(label)
+            if not jumped:
+                end = offset + 2
+            return ".".join(labels), end
+        offset += 1
+        labels.append(packet[offset:offset + length].decode(errors="replace"))
+        offset += length
+
+
+def records(packet):
+    if len(packet) < 12:
+        return []
+    questions = struct.unpack_from("!H", packet, 4)[0]
+    answers = struct.unpack_from("!H", packet, 6)[0]
+    authority = struct.unpack_from("!H", packet, 8)[0]
+    additional = struct.unpack_from("!H", packet, 10)[0]
+    offset = 12
+    for _ in range(questions):
+        _, offset = read_name(packet, offset)
+        offset += 4
+    result = []
+    for _ in range(answers + authority + additional):
+        name, offset = read_name(packet, offset)
+        rtype, rclass, ttl, length = struct.unpack_from("!HHIH", packet, offset)
+        offset += 10
+        data_offset = offset
+        if rtype == 12:
+            value, _ = read_name(packet, data_offset)
+            result.append((name, "PTR", value))
+        elif rtype == 33 and length >= 6:
+            priority, weight, port = struct.unpack_from("!HHH", packet, data_offset)
+            target, _ = read_name(packet, data_offset + 6)
+            result.append((name, "SRV", (target, port)))
+        elif rtype == 1 and length == 4:
+            result.append((name, "A", socket.inet_ntoa(packet[data_offset:data_offset + 4])))
+        elif rtype == 28 and length == 16:
+            result.append((name, "AAAA", socket.inet_ntop(socket.AF_INET6, packet[data_offset:data_offset + 16])))
+        offset += length
+    return result
+
+
+def main():
+    query = b"".join(encode_name(name) + struct.pack("!HH", 12, 1) for name in SERVICES)
+    packet = struct.pack("!HHHHHH", 0, 0, len(SERVICES), 0, 0, 0) + query
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind(("0.0.0.0", PORT))
+    if len(sys.argv) > 2:
+        sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(sys.argv[2]))
+    sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP,
+                    struct.pack("=4s4s", socket.inet_aton(GROUP),
+                                socket.inet_aton(sys.argv[2]) if len(sys.argv) > 2 else socket.inet_aton("0.0.0.0")))
+    sock.settimeout(0.5)
+    sock.sendto(packet, (GROUP, PORT))
+    deadline = time.monotonic() + float(sys.argv[1]) if len(sys.argv) > 1 else time.monotonic() + 3
+    found = {}
+    while time.monotonic() < deadline:
+        try:
+            data, address = sock.recvfrom(65535)
+        except socket.timeout:
+            continue
+        parsed = records(data)
+        srv = {name: value for name, kind, value in parsed if kind == "SRV"}
+        addresses = {name: value for name, kind, value in parsed if kind in ("A", "AAAA")}
+        for name, kind, value in parsed:
+            if kind != "PTR" or name not in SERVICES or value not in srv:
+                continue
+            target, port = srv[value]
+            host = addresses.get(target, address[0])
+            found[(SERVICES[name], host, port)] = True
+    for kind, host, port in sorted(found):
+        print(f"{kind}\t{host}\t{port}")
+
+
+if __name__ == "__main__":
+    main()
