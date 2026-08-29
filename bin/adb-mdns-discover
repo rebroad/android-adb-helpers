@@ -3,8 +3,14 @@
 
 import socket
 import struct
+import subprocess
 import sys
 import time
+
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
 
 GROUP = "224.0.0.251"
 PORT = 5353
@@ -72,19 +78,66 @@ def records(packet):
     return result
 
 
+def interface_addresses(sock):
+    """Return IPv4 addresses suitable for joining the mDNS multicast group."""
+    addresses = []
+    if fcntl is not None:
+        try:
+            interface_names = socket.if_nameindex()
+        except OSError:
+            interface_names = []
+        for _, name in interface_names:
+            if name == "lo":
+                continue
+            try:
+                request = struct.pack("256s", name.encode())
+                result = fcntl.ioctl(sock.fileno(), 0x8915, request)
+                address = socket.inet_ntoa(result[20:24])
+            except (OSError, ValueError):
+                continue
+            if not address.startswith("127.") and address not in addresses:
+                addresses.append(address)
+    if not addresses:
+        try:
+            output = subprocess.check_output(
+                ["ifconfig"], stderr=subprocess.DEVNULL, text=True
+            )
+        except (OSError, subprocess.SubprocessError):
+            output = ""
+        for line in output.splitlines():
+            fields = line.split()
+            if len(fields) >= 2 and fields[0] == "inet":
+                address = fields[1]
+                if not address.startswith("127.") and address not in addresses:
+                    addresses.append(address)
+    return addresses
+
+
 def main():
     query = b"".join(encode_name(name) + struct.pack("!HH", 12, 1) for name in SERVICES)
     packet = struct.pack("!HHHHHH", 0, 0, len(SERVICES), 0, 0, 0) + query
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.bind(("0.0.0.0", PORT))
-    if len(sys.argv) > 2:
-        sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(sys.argv[2]))
-    sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP,
-                    struct.pack("=4s4s", socket.inet_aton(GROUP),
-                                socket.inet_aton(sys.argv[2]) if len(sys.argv) > 2 else socket.inet_aton("0.0.0.0")))
+    requested_interface = sys.argv[2] if len(sys.argv) > 2 else ""
+    interfaces = [requested_interface] if requested_interface else interface_addresses(sock)
+    if not interfaces:
+        interfaces = ["0.0.0.0"]
+    for interface in interfaces:
+        try:
+            sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP,
+                            struct.pack("=4s4s", socket.inet_aton(GROUP),
+                                        socket.inet_aton(interface)))
+        except OSError:
+            continue
     sock.settimeout(0.5)
-    sock.sendto(packet, (GROUP, PORT))
+    for interface in interfaces:
+        try:
+            sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF,
+                            socket.inet_aton(interface))
+            sock.sendto(packet, (GROUP, PORT))
+        except OSError:
+            continue
     deadline = time.monotonic() + float(sys.argv[1]) if len(sys.argv) > 1 else time.monotonic() + 3
     found = {}
     while time.monotonic() < deadline:
@@ -94,12 +147,16 @@ def main():
             continue
         parsed = records(data)
         srv = {name: value for name, kind, value in parsed if kind == "SRV"}
+        ipv4_addresses = {name: value for name, kind, value in parsed if kind == "A"}
         addresses = {name: value for name, kind, value in parsed if kind in ("A", "AAAA")}
         for name, kind, value in parsed:
             if kind != "PTR" or name not in SERVICES or value not in srv:
                 continue
             target, port = srv[value]
-            host = addresses.get(target, address[0])
+            # The service target is often advertised only as a link-local IPv6
+            # address.  The IPv4 source of the mDNS packet is the reachable
+            # address that adb should use from Termux.
+            host = ipv4_addresses.get(target, address[0])
             found[(SERVICES[name], host, port)] = True
     for kind, host, port in sorted(found):
         print(f"{kind}\t{host}\t{port}")

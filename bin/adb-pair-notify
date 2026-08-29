@@ -25,11 +25,7 @@ submit() {
   touch "${LOG_FILE}"
   printf '%s submit invoked reply=%q\n' "$(date '+%F %T')" "${reply}" >> "${LOG_FILE}"
   IFS='|' read -r host debug_port pair_host pair_port < "${STATE_FILE}"
-  if [ -n "${debug_port}" ]; then
-    read -r pin _ <<< "${reply}"
-  else
-    read -r debug_port pin _ <<< "${reply}"
-  fi
+  read -r pin _ <<< "${reply}"
   [[ "${pin}" =~ ^[0-9]{6}$ ]] || {
     notify "ADB pairing" "PIN must be exactly six digits"
     exit 2
@@ -67,48 +63,33 @@ if [ "${1:-}" = "--submit" ]; then
   exit 0
 fi
 
-[ "$#" -ge 1 ] && [ "$#" -le 2 ] || die "usage: adb-pair-notify PHONE_IP[:DEBUG_PORT] [DEBUG_PORT]"
+[ "$#" -eq 0 ] || die "usage: adb-pair-notify"
 mkdir -p "${STATE_DIR}"
-host="$1"
-debug_port="${2:-}"
-if [ "$#" -eq 1 ] && [[ "${host}" =~ ^(.+):([0-9]{1,5})$ ]]; then
-  debug_port="${BASH_REMATCH[2]}"
-  host="${BASH_REMATCH[1]}"
-fi
-[[ "${host}" =~ ^[A-Za-z0-9.:-]+$ ]] || die "usage: adb-pair-notify PHONE_IP[:DEBUG_PORT] [DEBUG_PORT]"
-if [ -n "${debug_port}" ]; then
-  [[ "${debug_port}" =~ ^[0-9]{1,5}$ ]] || die "invalid debug port"
-fi
+host=""
+debug_port=""
 rm -f "${DONE_FILE}"
 touch "${LOG_FILE}"
 printf '%s|%s|%s|%s\n' "${host}" "${debug_port}" "" "" > "${STATE_FILE}"
 
 action="/data/data/com.termux/files/usr/bin/bash ${SELF} --submit \"\$REPLY\""
 for _ in $(seq 1 60); do
-  discovery="$(${MDNS} 1 "${host}" 2>>"${LOG_FILE}" || true)"
-  if [ -z "${debug_port}" ]; then
-    connect_line="$(printf '%s\n' "${discovery}" | awk '$1 == "connect" {print; exit}')"
-    if [ -n "${connect_line}" ]; then
-      read -r _ connect_host discovered_debug_port <<< "${connect_line}"
-      if [[ "${discovered_debug_port}" =~ ^[0-9]{1,5}$ ]]; then
-        debug_port="${discovered_debug_port}"
-        printf '%s mDNS connect service host=%s port=%s\n' "$(date '+%F %T')" "${connect_host}" "${debug_port}" >> "${LOG_FILE}"
-      fi
+  discovery="$(${MDNS} 1 2>>"${LOG_FILE}" || true)"
+  connect_line="$(printf '%s\n' "${discovery}" | awk '$1 == "connect" {print; exit}')"
+  if [ -n "${connect_line}" ]; then
+    read -r _ connect_host discovered_debug_port <<< "${connect_line}"
+    if [[ "${discovered_debug_port}" =~ ^[0-9]{1,5}$ ]]; then
+      [ -n "${host}" ] || host="${connect_host}"
+      debug_port="${discovered_debug_port}"
+      printf '%s mDNS connect service host=%s port=%s\n' "$(date '+%F %T')" "${connect_host}" "${debug_port}" >> "${LOG_FILE}"
     fi
   fi
   pair_line="$(printf '%s\n' "${discovery}" | awk '$1 == "pairing" {print; exit}')"
   if [ -n "${pair_line}" ]; then
     read -r _ pair_host pair_port <<< "${pair_line}"
     printf '%s mDNS pairing service host=%s port=%s\n' "$(date '+%F %T')" "${pair_host}" "${pair_port}" >> "${LOG_FILE}"
-    # The supplied address is the phone's reachable Wi-Fi IPv4 address.  The
-    # mDNS hostname may be link-local IPv6, which adb cannot always use from
-    # Termux without an interface scope, so retain it for diagnostics only.
+    [ -n "${host}" ] || host="${pair_host}"
     printf '%s|%s|%s|%s\n' "${host}" "${debug_port}" "${host}" "${pair_port}" > "${STATE_FILE}"
-    if [ -n "${debug_port}" ]; then
-      content="Tap Enter PIN, then enter: PIN"
-    else
-      content="Tap Enter PIN, then enter: DEBUG_PORT PIN"
-    fi
+    content="Tap Enter PIN, then enter: PIN"
     termux-notification \
       --id "${NOTIFICATION_ID}" \
       --title "ADB pairing discovered" \
