@@ -195,5 +195,5 @@ while :; do
     log "not-paired reminder posted"
     next_reminder=$((now + 30))
   fi
-  sleep 29
+  sleep 9
 done
