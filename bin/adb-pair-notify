@@ -3,57 +3,114 @@ set -euo pipefail
 export PATH="/data/data/com.termux/files/usr/bin:/data/data/com.termux/files/usr/bin/applets:${PATH:-}"
 
 STATE_DIR="${HOME}/.cache/adb-pair-notify"
-DONE_FILE="${STATE_DIR}/done"
 LOG_FILE="${STATE_DIR}/attempt.log"
 STATE_FILE="${STATE_DIR}/state"
+LOCK_FILE="${STATE_DIR}/monitor.pid"
+INPUT_FILE="${STATE_DIR}/input.pid"
 SELF="${HOME}/bin/adb-pair-notify"
 MDNS="${HOME}/bin/adb-mdns-discover"
 NOTIFICATION_ID="adb-pair"
+
+mkdir -p "${STATE_DIR}"
+touch "${LOG_FILE}"
+
+log() {
+  printf '%s %s\n' "$(date '+%F %T')" "$*" >> "${LOG_FILE}"
+}
 
 die() {
   echo "adb-pair-notify: $*" >&2
   exit 2
 }
 
+remove_notification() {
+  if command -v termux-notification-remove >/dev/null 2>&1; then
+    termux-notification-remove "${NOTIFICATION_ID}" >/dev/null 2>&1 || true
+  fi
+}
+
 notify() {
-  termux-notification --id "${NOTIFICATION_ID}" --title "$1" --content "$2" --priority high --alert-once
+  remove_notification
+  termux-notification --id "${NOTIFICATION_ID}" --title "$1" --content "$2" "${@:3}" \
+    >>"${LOG_FILE}" 2>&1 || log "notification failed: $1"
+}
+
+write_state() {
+  local host="$1" debug_port="$2" pair_host="$3" pair_port="$4"
+  printf '%s|%s|%s|%s\n' "${host}" "${debug_port}" "${pair_host}" "${pair_port}" \
+    > "${STATE_FILE}.new"
+  mv -f "${STATE_FILE}.new" "${STATE_FILE}"
+}
+
+input_active() {
+  local input_pid
+  if [ ! -s "${INPUT_FILE}" ]; then
+    return 1
+  fi
+  read -r input_pid < "${INPUT_FILE}" || return 1
+  if kill -0 "${input_pid}" 2>/dev/null; then
+    return 0
+  fi
+  rm -f "${INPUT_FILE}"
+  return 1
+}
+
+format_endpoint() {
+  local host="$1" port="$2"
+  case "${host}" in
+    *:*) printf '[%s]:%s' "${host}" "${port}" ;;
+    *) printf '%s:%s' "${host}" "${port}" ;;
+  esac
+}
+
+adb_connected() {
+  local endpoint
+  endpoint="$(format_endpoint "$1" "$2")"
+  adb devices 2>>"${LOG_FILE}" | awk -v endpoint="${endpoint}" \
+    '$1 == endpoint && $2 == "device" {found=1} END {exit !found}'
 }
 
 submit() {
-  local reply="$1" pair_port pin debug_port host pair_host output
-  mkdir -p "${STATE_DIR}"
-  touch "${LOG_FILE}"
-  printf '%s submit invoked reply=%q\n' "$(date '+%F %T')" "${reply}" >> "${LOG_FILE}"
+  local reply="$1" host debug_port pair_host pair_port pin output pair_endpoint debug_endpoint
+  local input_marker="${INPUT_FILE}.new"
+
+  if input_active; then
+    exit 0
+  fi
+  printf '%s\n' "$$" > "${input_marker}"
+  mv -f "${input_marker}" "${INPUT_FILE}"
+  trap 'rm -f "${INPUT_FILE}"' EXIT
+
+  log "submit invoked reply=${reply@Q}"
   IFS='|' read -r host debug_port pair_host pair_port < "${STATE_FILE}"
   read -r pin _ <<< "${reply}"
   [[ "${pin}" =~ ^[0-9]{6}$ ]] || {
     notify "ADB pairing" "PIN must be exactly six digits"
     exit 2
   }
-  [[ "${debug_port}" =~ ^[0-9]{1,5}$ ]] || {
-    notify "ADB pairing" "Invalid debug port"
+  [[ "${host}" != "" && "${debug_port}" =~ ^[0-9]{1,5}$ ]] || {
+    notify "ADB pairing" "ADB debugging endpoint is no longer available"
     exit 2
   }
-  [[ "${pair_port}" =~ ^[0-9]{1,5}$ ]] || {
-    notify "ADB pairing" "Pairing service port was not discovered"
+  [[ "${pair_host}" != "" && "${pair_port}" =~ ^[0-9]{1,5}$ ]] || {
+    notify "ADB pairing" "Pairing service is no longer available"
     exit 2
   }
 
-  if ! output="$(adb pair "${pair_host}:${pair_port}" "${pin}" 2>&1)"; then
-    printf '%s adb pair failed: %s\n' "$(date '+%F %T')" "${output}" >> "${LOG_FILE}"
+  pair_endpoint="$(format_endpoint "${pair_host}" "${pair_port}")"
+  debug_endpoint="$(format_endpoint "${host}" "${debug_port}")"
+  if ! output="$(adb pair "${pair_endpoint}" "${pin}" 2>&1)"; then
+    log "adb pair failed: ${output}"
     notify "ADB pairing failed" "${output:0:180}"
-    : > "${DONE_FILE}"
     exit 1
   fi
   if ! output="${output}
-$(adb connect "${host}:${debug_port}" 2>&1)"; then
-    printf '%s adb connect failed: %s\n' "$(date '+%F %T')" "${output}" >> "${LOG_FILE}"
+$(adb connect "${debug_endpoint}" 2>&1)"; then
+    log "adb connect failed: ${output}"
     notify "ADB paired; connect failed" "${output:0:180}"
-    : > "${DONE_FILE}"
     exit 1
   fi
-  printf '%s adb success: %s\n' "$(date '+%F %T')" "${output}" >> "${LOG_FILE}"
-  : > "${DONE_FILE}"
+  log "adb success: ${output}"
   notify "ADB ready" "${output:0:180}"
 }
 
@@ -64,43 +121,84 @@ if [ "${1:-}" = "--submit" ]; then
 fi
 
 [ "$#" -eq 0 ] || die "usage: adb-pair-notify"
-mkdir -p "${STATE_DIR}"
-host=""
-debug_port=""
-rm -f "${DONE_FILE}"
-touch "${LOG_FILE}"
-printf '%s|%s|%s|%s\n' "${host}" "${debug_port}" "" "" > "${STATE_FILE}"
+
+if [ -s "${LOCK_FILE}" ]; then
+  read -r old_pid < "${LOCK_FILE}" || true
+  if [ -n "${old_pid:-}" ] && kill -0 "${old_pid}" 2>/dev/null; then
+    die "monitor already running (pid ${old_pid})"
+  fi
+fi
+printf '%s\n' "$$" > "${LOCK_FILE}"
+trap 'rm -f "${LOCK_FILE}" "${INPUT_FILE}" "${STATE_FILE}.new"' EXIT INT TERM
+write_state "" "" "" ""
 
 action="/data/data/com.termux/files/usr/bin/bash ${SELF} --submit \"\$REPLY\""
-for _ in $(seq 1 60); do
+next_pair_notice=0
+next_reminder=0
+
+log "persistent monitor started"
+while :; do
   discovery="$(${MDNS} 1 2>>"${LOG_FILE}" || true)"
+  discovered_host=""
+  discovered_debug_port=""
+  discovered_pair_host=""
+  discovered_pair_port=""
+
   connect_line="$(printf '%s\n' "${discovery}" | awk '$1 == "connect" {print; exit}')"
   if [ -n "${connect_line}" ]; then
-    read -r _ connect_host discovered_debug_port <<< "${connect_line}"
-    if [[ "${discovered_debug_port}" =~ ^[0-9]{1,5}$ ]]; then
-      [ -n "${host}" ] || host="${connect_host}"
-      debug_port="${discovered_debug_port}"
-      printf '%s mDNS connect service host=%s port=%s\n' "$(date '+%F %T')" "${connect_host}" "${debug_port}" >> "${LOG_FILE}"
-    fi
+    read -r _ discovered_host discovered_debug_port <<< "${connect_line}"
+    [[ "${discovered_debug_port}" =~ ^[0-9]{1,5}$ ]] || {
+      discovered_host=""
+      discovered_debug_port=""
+    }
   fi
   pair_line="$(printf '%s\n' "${discovery}" | awk '$1 == "pairing" {print; exit}')"
   if [ -n "${pair_line}" ]; then
-    read -r _ pair_host pair_port <<< "${pair_line}"
-    printf '%s mDNS pairing service host=%s port=%s\n' "$(date '+%F %T')" "${pair_host}" "${pair_port}" >> "${LOG_FILE}"
-    [ -n "${host}" ] || host="${pair_host}"
-    printf '%s|%s|%s|%s\n' "${host}" "${debug_port}" "${host}" "${pair_port}" > "${STATE_FILE}"
-    content="Tap Enter PIN, then enter: PIN"
-    termux-notification \
-      --id "${NOTIFICATION_ID}" \
-      --title "ADB pairing discovered" \
-      --content "${content}" \
-      --ongoing \
-      --priority high \
-      --button1 "Enter PIN" \
-      --button1-action "${action}"
-    while [ ! -e "${DONE_FILE}" ]; do sleep 1; done
-    exit 0
+    read -r _ discovered_pair_host discovered_pair_port <<< "${pair_line}"
+    [[ "${discovered_pair_port}" =~ ^[0-9]{1,5}$ ]] || {
+      discovered_pair_host=""
+      discovered_pair_port=""
+    }
   fi
-  sleep 9
+  [ -n "${discovered_host}" ] || discovered_host="${discovered_pair_host}"
+  [ -n "${discovered_pair_host}" ] || discovered_pair_host="${discovered_host}"
+
+  now="$(date +%s)"
+  if input_active; then
+    sleep 1
+    continue
+  fi
+
+  if [ -n "${discovered_host}" ] && [ -n "${discovered_debug_port}" ] && \
+      adb_connected "${discovered_host}" "${discovered_debug_port}"; then
+    remove_notification
+    write_state "${discovered_host}" "${discovered_debug_port}" "${discovered_pair_host}" "${discovered_pair_port}"
+    sleep 9
+    continue
+  fi
+
+  if [ -n "${discovered_host}" ] && [ -n "${discovered_pair_port}" ]; then
+    write_state "${discovered_host}" "${discovered_debug_port}" "${discovered_pair_host}" "${discovered_pair_port}"
+    if [ "${now}" -ge "${next_pair_notice}" ]; then
+      notify "ADB pairing available" "Tap Enter PIN and enter the six-digit pairing PIN" \
+        --ongoing --priority high --button1 "Enter PIN" --button1-action "${action}"
+      log "pairing notification posted host=${discovered_pair_host} port=${discovered_pair_port}"
+      next_pair_notice=$((now + 10))
+    fi
+    sleep 9
+    continue
+  fi
+
+  write_state "${discovered_host}" "${discovered_debug_port}" "" ""
+  if [ "${now}" -ge "${next_reminder}" ]; then
+    if [ -n "${discovered_host}" ]; then
+      notify "ADB disconnected" "Wireless debugging is active, but ADB is not connected" --priority default
+      log "disconnected reminder posted"
+    else
+      notify "Wireless debugging inactive" "Enable Wireless debugging to reconnect ADB" --priority default
+      log "inactive reminder posted"
+    fi
+    next_reminder=$((now + 30))
+  fi
+  sleep 29
 done
-notify "ADB pairing expired" "No mDNS pairing service was found"
