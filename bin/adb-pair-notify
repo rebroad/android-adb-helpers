@@ -191,13 +191,8 @@ while :; do
 
   write_state "${discovered_host}" "${discovered_debug_port}" "" ""
   if [ "${now}" -ge "${next_reminder}" ]; then
-    if [ -n "${discovered_host}" ]; then
-      notify "ADB disconnected" "Wireless debugging is active, but ADB is not connected" --priority default
-      log "disconnected reminder posted"
-    else
-      notify "Wireless debugging inactive" "Enable Wireless debugging to reconnect ADB" --priority default
-      log "inactive reminder posted"
-    fi
+    notify "Wireless debugging is not paired" "Pair this device to reconnect ADB" --priority default
+    log "not-paired reminder posted"
     next_reminder=$((now + 30))
   fi
   sleep 29
