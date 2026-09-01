@@ -75,3 +75,14 @@ displays the PIN-entry notification.
 - `adb-top` displays per-CPU usage and a process summary obtained through ADB.
 
 Stop the monitor with `Ctrl-C` when it is running in the foreground.
+
+For a detached monitor, use its daemon mode:
+
+```sh
+adb-pair-notify --daemon &
+```
+
+Daemon mode reads no terminal input and writes its output to
+`~/.cache/adb-pair-notify/attempt.log`. The repository also includes a runit
+service definition used by the Termux boot configuration; runit keeps the
+monitor running and restarts it if necessary.

@@ -120,7 +120,13 @@ if [ "${1:-}" = "--submit" ]; then
   exit 0
 fi
 
-[ "$#" -eq 0 ] || die "usage: adb-pair-notify"
+if [ "${1:-}" = "--daemon" ]; then
+  [ "$#" -eq 1 ] || die "usage: adb-pair-notify [--daemon]"
+  exec </dev/null >>"${LOG_FILE}" 2>&1
+  set --
+fi
+
+[ "$#" -eq 0 ] || die "usage: adb-pair-notify [--daemon]"
 
 if [ -s "${LOCK_FILE}" ]; then
   read -r old_pid < "${LOCK_FILE}" || true
