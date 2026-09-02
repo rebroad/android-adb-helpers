@@ -155,7 +155,8 @@ if [ -s "${LOCK_FILE}" ]; then
   fi
 fi
 printf '%s\n' "$$" > "${LOCK_FILE}"
-trap 'rm -f "${LOCK_FILE}" "${INPUT_FILE}" "${STATE_FILE}.new"' EXIT INT TERM
+trap 'rm -f "${LOCK_FILE}" "${INPUT_FILE}" "${STATE_FILE}.new"' EXIT
+trap 'exit 143' INT TERM
 write_state "" "" "" ""
 
 action="/data/data/com.termux/files/usr/bin/bash ${SELF} --submit \"\$REPLY\""
