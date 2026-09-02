@@ -122,17 +122,33 @@ submit() {
     notify "ADB pairing failed" "${output:0:180}"
     exit 1
   fi
-  log "adb connect started pid=$$ endpoint=${debug_endpoint}"
-  set +e
-  connect_output="$(timeout 20 adb connect "${debug_endpoint}" 2>&1)"
-  connect_status=$?
-  set -e
-  output="${output}
-${connect_output}"
-  log "adb connect finished pid=$$ status=${connect_status} output=${connect_output@Q}"
-  if [ "${connect_status}" -ne 0 ] || ! adb_connect_succeeded "${debug_endpoint}" "${connect_output}"; then
+  connect_attempt=1
+  connect_succeeded=1
+  connect_output=""
+  while [ "${connect_attempt}" -le 3 ]; do
+    if [ "${connect_attempt}" -gt 1 ]; then
+      backoff=$((connect_attempt - 1))
+      log "adb connect retry pid=$$ attempt=${connect_attempt} sleep=${backoff}s endpoint=${debug_endpoint}"
+      sleep "${backoff}"
+    fi
+    log "adb connect started pid=$$ attempt=${connect_attempt} endpoint=${debug_endpoint}"
+    set +e
+    attempt_output="$(timeout 20 adb connect "${debug_endpoint}" 2>&1)"
+    connect_status=$?
+    set -e
+    connect_output="${attempt_output}"
+    output="${output}
+${attempt_output}"
+    log "adb connect finished pid=$$ attempt=${connect_attempt} status=${connect_status} output=${attempt_output@Q}"
+    if [ "${connect_status}" -eq 0 ] && adb_connect_succeeded "${debug_endpoint}" "${attempt_output}"; then
+      connect_succeeded=0
+      break
+    fi
+    connect_attempt=$((connect_attempt + 1))
+  done
+  if [ "${connect_succeeded}" -ne 0 ]; then
     : > "${RETRY_FILE}"
-    log "adb connect rejected as unsuccessful status=${connect_status} endpoint=${debug_endpoint}"
+    log "adb connect failed after 3 attempts endpoint=${debug_endpoint}"
     notify "ADB paired; connect failed" "${output:0:180}"
     exit 1
   fi
