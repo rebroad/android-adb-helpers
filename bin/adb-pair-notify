@@ -73,6 +73,11 @@ adb_connected() {
     '$1 == endpoint && $2 == "device" {found=1} END {exit !found}'
 }
 
+adb_connect_succeeded() {
+  local endpoint="$1" response="$2"
+  [[ "${response}" == *"connected to ${endpoint}"* ]]
+}
+
 submit() {
   local reply="$1" host debug_port pair_host pair_port pin output pair_endpoint debug_endpoint
   local input_marker="${INPUT_FILE}.new"
@@ -125,8 +130,9 @@ submit() {
   output="${output}
 ${connect_output}"
   log "adb connect finished pid=$$ status=${connect_status} output=${connect_output@Q}"
-  if [ "${connect_status}" -ne 0 ]; then
+  if [ "${connect_status}" -ne 0 ] || ! adb_connect_succeeded "${debug_endpoint}" "${connect_output}"; then
     : > "${RETRY_FILE}"
+    log "adb connect rejected as unsuccessful status=${connect_status} endpoint=${debug_endpoint}"
     notify "ADB paired; connect failed" "${output:0:180}"
     exit 1
   fi
