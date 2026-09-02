@@ -65,9 +65,13 @@ done
    `adb pair`, and then connects to the debugging endpoint.
 
 The helper polls mDNS every ten seconds. It uses a single notification ID, so
-notifications are replaced rather than stacked. When Wireless Debugging is
-not paired, it displays a reminder; while the pairing screen is active, it
-displays the PIN-entry notification.
+notifications are replaced rather than stacked. The PIN notification is not
+refreshed while the same pairing endpoint remains available, so opening its
+inline reply cannot be interrupted by the next poll. Pairing submissions are
+serialized, and each `adb pair` and `adb connect` attempt is logged with its
+exit status and output. When Wireless Debugging is not paired, it displays a
+reminder; while the pairing screen is active, it displays the PIN-entry
+notification.
 
 ## Other commands
 

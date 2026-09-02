@@ -7,6 +7,8 @@ LOG_FILE="${STATE_DIR}/attempt.log"
 STATE_FILE="${STATE_DIR}/state"
 LOCK_FILE="${STATE_DIR}/monitor.pid"
 INPUT_FILE="${STATE_DIR}/input.pid"
+SUBMIT_LOCK="${STATE_DIR}/submit.lock"
+RETRY_FILE="${STATE_DIR}/retry"
 SELF="${HOME}/bin/adb-pair-notify"
 MDNS="${HOME}/bin/adb-mdns-discover"
 NOTIFICATION_ID="adb-pair"
@@ -44,7 +46,7 @@ write_state() {
 
 input_active() {
   local input_pid
-  if [ ! -s "${INPUT_FILE}" ]; then
+  if [ ! -d "${SUBMIT_LOCK}" ] || [ ! -s "${INPUT_FILE}" ]; then
     return 1
   fi
   read -r input_pid < "${INPUT_FILE}" || return 1
@@ -52,6 +54,7 @@ input_active() {
     return 0
   fi
   rm -f "${INPUT_FILE}"
+  rmdir "${SUBMIT_LOCK}" 2>/dev/null || true
   return 1
 }
 
@@ -74,39 +77,56 @@ submit() {
   local reply="$1" host debug_port pair_host pair_port pin output pair_endpoint debug_endpoint
   local input_marker="${INPUT_FILE}.new"
 
-  if input_active; then
+  if ! mkdir "${SUBMIT_LOCK}" 2>/dev/null; then
+    log "submit rejected: another pairing attempt is active"
     exit 0
   fi
   printf '%s\n' "$$" > "${input_marker}"
   mv -f "${input_marker}" "${INPUT_FILE}"
-  trap 'rm -f "${INPUT_FILE}"' EXIT
+  trap 'rm -f "${INPUT_FILE}"; rmdir "${SUBMIT_LOCK}" 2>/dev/null || true' EXIT
 
-  log "submit invoked reply=${reply@Q}"
+  log "submit started pid=$$ reply_length=${#reply}"
   IFS='|' read -r host debug_port pair_host pair_port < "${STATE_FILE}"
   read -r pin _ <<< "${reply}"
   [[ "${pin}" =~ ^[0-9]{6}$ ]] || {
+    : > "${RETRY_FILE}"
     notify "ADB pairing" "PIN must be exactly six digits"
     exit 2
   }
   [[ "${host}" != "" && "${debug_port}" =~ ^[0-9]{1,5}$ ]] || {
+    : > "${RETRY_FILE}"
     notify "ADB pairing" "ADB debugging endpoint is no longer available"
     exit 2
   }
   [[ "${pair_host}" != "" && "${pair_port}" =~ ^[0-9]{1,5}$ ]] || {
+    : > "${RETRY_FILE}"
     notify "ADB pairing" "Pairing service is no longer available"
     exit 2
   }
 
   pair_endpoint="$(format_endpoint "${pair_host}" "${pair_port}")"
   debug_endpoint="$(format_endpoint "${host}" "${debug_port}")"
-  if ! output="$(adb pair "${pair_endpoint}" "${pin}" 2>&1)"; then
-    log "adb pair failed: ${output}"
+  log "adb pair started pid=$$ endpoint=${pair_endpoint}"
+  set +e
+  output="$(timeout 20 adb pair "${pair_endpoint}" "${pin}" 2>&1)"
+  pair_status=$?
+  set -e
+  log "adb pair finished pid=$$ status=${pair_status} output=${output@Q}"
+  if [ "${pair_status}" -ne 0 ]; then
+    : > "${RETRY_FILE}"
     notify "ADB pairing failed" "${output:0:180}"
     exit 1
   fi
-  if ! output="${output}
-$(adb connect "${debug_endpoint}" 2>&1)"; then
-    log "adb connect failed: ${output}"
+  log "adb connect started pid=$$ endpoint=${debug_endpoint}"
+  set +e
+  connect_output="$(timeout 20 adb connect "${debug_endpoint}" 2>&1)"
+  connect_status=$?
+  set -e
+  output="${output}
+${connect_output}"
+  log "adb connect finished pid=$$ status=${connect_status} output=${connect_output@Q}"
+  if [ "${connect_status}" -ne 0 ]; then
+    : > "${RETRY_FILE}"
     notify "ADB paired; connect failed" "${output:0:180}"
     exit 1
   fi
@@ -139,8 +159,8 @@ trap 'rm -f "${LOCK_FILE}" "${INPUT_FILE}" "${STATE_FILE}.new"' EXIT INT TERM
 write_state "" "" "" ""
 
 action="/data/data/com.termux/files/usr/bin/bash ${SELF} --submit \"\$REPLY\""
-next_pair_notice=0
 next_reminder=0
+pair_notice_key=""
 
 log "persistent monitor started"
 while :; do
@@ -178,6 +198,8 @@ while :; do
   if [ -n "${discovered_host}" ] && [ -n "${discovered_debug_port}" ] && \
       adb_connected "${discovered_host}" "${discovered_debug_port}"; then
     remove_notification
+    pair_notice_key=""
+    rm -f "${RETRY_FILE}"
     write_state "${discovered_host}" "${discovered_debug_port}" "${discovered_pair_host}" "${discovered_pair_port}"
     sleep 9
     continue
@@ -185,17 +207,20 @@ while :; do
 
   if [ -n "${discovered_host}" ] && [ -n "${discovered_pair_port}" ]; then
     write_state "${discovered_host}" "${discovered_debug_port}" "${discovered_pair_host}" "${discovered_pair_port}"
-    if [ "${now}" -ge "${next_pair_notice}" ]; then
+    current_pair_key="${discovered_pair_host}:${discovered_pair_port}"
+    if [ "${current_pair_key}" != "${pair_notice_key}" ] || [ -e "${RETRY_FILE}" ]; then
+      rm -f "${RETRY_FILE}"
       notify "ADB pairing available" "Tap Enter PIN and enter the six-digit pairing PIN" \
         --ongoing --priority high --button1 "Enter PIN" --button1-action "${action}"
       log "pairing notification posted host=${discovered_pair_host} port=${discovered_pair_port}"
-      next_pair_notice=$((now + 10))
+      pair_notice_key="${current_pair_key}"
     fi
     sleep 9
     continue
   fi
 
   write_state "${discovered_host}" "${discovered_debug_port}" "" ""
+  pair_notice_key=""
   if [ "${now}" -ge "${next_reminder}" ]; then
     notify "Wireless debugging is not paired" "Pair this device to reconnect ADB" --priority default
     log "not-paired reminder posted"
