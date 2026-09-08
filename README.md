@@ -21,6 +21,9 @@ Small Termux helpers for using Android Wireless Debugging over ADB.
 
 - Android notification permission enabled for Termux:API. The notification
   permission is required by `adb-pair-notify` to display the PIN-entry action.
+  In Samsung notification settings, set the Termux:API notification category used
+  by pairing prompts to Alert and enable Show as pop-up. This is required for
+  the PIN action to appear as a heads-up banner over the pairing screen.
 - Android Wireless Debugging enabled in Developer options. The phone and the
   computer or Termux network interface must be on the same local network.
 - On Samsung devices, set Termux and Termux:API to **Unrestricted** battery

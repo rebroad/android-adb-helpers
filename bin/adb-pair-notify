@@ -180,7 +180,6 @@ ${attempt_output}"
     exit 1
   fi
   log "adb success: ${output}"
-  notify "ADB ready" "${output:0:180}"
 }
 
 if [ "${1:-}" = "--submit" ]; then
@@ -282,7 +281,7 @@ while :; do
     if [ "${current_pair_key}" != "${pair_notice_key}" ] || [ -e "${RETRY_FILE}" ]; then
       rm -f "${RETRY_FILE}"
       notify "ADB pairing available" "Tap Enter PIN and enter the six-digit pairing PIN" \
-        --ongoing --priority high --button1 "Enter PIN" --button1-action "${action}"
+        --ongoing --priority max --button1 "Enter PIN" --button1-action "${action}"
       log "pairing notification posted host=${discovered_pair_host} port=${discovered_pair_port}"
       pair_notice_key="${current_pair_key}"
     fi
