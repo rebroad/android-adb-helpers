@@ -67,17 +67,12 @@ done
    pairing PIN. The helper discovers the pairing port through mDNS, performs
    `adb pair`, and then connects to the debugging endpoint.
 
-The helper polls mDNS approximately every five seconds while a debugging endpoint is advertised, and every ten seconds otherwise. It uses a single notification ID, so
-notifications are replaced rather than stacked. The PIN notification is not
-refreshed while the same pairing endpoint remains available, so opening its
-inline reply cannot be interrupted by the next poll. Pairing submissions are
-serialized, and each `adb pair` and `adb connect` attempt is logged with its exit status and output.
+The helper polls mDNS approximately every five seconds while a debugging endpoint is advertised, and every ten seconds otherwise. Pairing prompts and quiet status reminders use separate notification IDs, so a status reminder cannot replace a PIN prompt. Every PIN prompt is created on a new high-priority Android notification channel; if that channel cannot be created, the prompt is not posted. The PIN notification is not refreshed while the same pairing endpoint remains available, so opening its inline reply cannot be interrupted by the next poll. Pairing submissions are serialized, and each `adb pair` and `adb connect` attempt is logged with its exit status and output.
 After an unsuccessful connect, it also probes the debugging TCP port so the log
 can distinguish a missing listener from a TLS or ADB handshake failure. Quiet status
-reminders use a separate channel; PIN prompts use a dedicated high-priority channel.
-If the PIN prompt is not shown as a pop-up, delete the dedicated channel with
-`termux-notification-channel -d adb-pairing-pin-v1`, then enable Alert and Show as
-pop-up for the recreated `ADB pairing PIN` channel in Android notification settings.
+reminders use a separate channel; each PIN prompt uses a fresh high-priority
+channel. Android notification permission and the Termux:API category setting must
+still allow Alert and Show as pop-up.
 When Wireless Debugging is not paired, it displays a reminder including the discovered
 debugging endpoint when available; while the pairing screen is active, it displays
 the PIN-entry notification.

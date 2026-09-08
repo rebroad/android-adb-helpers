@@ -14,7 +14,8 @@ MDNS="${HOME}/bin/adb-mdns-discover"
 PAIR_NOTIFICATION_ID="adb-pair"
 STATUS_NOTIFICATION_ID="adb-pair-status"
 STATUS_CHANNEL_ID="adb-pairing-status"
-PAIR_CHANNEL_ID="adb-pairing-pin-v1"
+PAIR_CHANNEL_PREFIX="adb-pairing-pin"
+pair_channel_serial=0
 
 mkdir -p "${STATE_DIR}"
 touch "${LOG_FILE}"
@@ -52,12 +53,13 @@ ensure_status_channel() {
 ensure_pair_channel() {
   if [ -x "${PREFIX}/libexec/termux-api" ]; then
     "${PREFIX}/libexec/termux-api" NotificationChannel \
-      --es id "${PAIR_CHANNEL_ID}" \
+      --es id "$1" \
       --es name "ADB pairing PIN" \
       --es priority max >/dev/null 2>&1 ||
-      log "notification channel setup failed: ${PAIR_CHANNEL_ID}"
+      { log "notification channel setup failed: $1"; return 1; }
   else
     log "notification channel setup unavailable: termux-api client not found"
+    return 1
   fi
 }
 
@@ -298,7 +300,8 @@ while :; do
 
   if [ -n "${discovered_host}" ] && [ -n "${discovered_debug_port}" ] && \
       adb_connected "${discovered_host}" "${discovered_debug_port}"; then
-    remove_notification
+    remove_notification "${PAIR_NOTIFICATION_ID}"
+    remove_notification "${STATUS_NOTIFICATION_ID}"
     pair_notice_key=""
     rm -f "${RETRY_FILE}"
     write_state "${discovered_host}" "${discovered_debug_port}" "${discovered_pair_host}" "${discovered_pair_port}"
@@ -311,11 +314,17 @@ while :; do
     current_pair_key="${discovered_pair_host}:${discovered_pair_port}"
     if [ "${current_pair_key}" != "${pair_notice_key}" ] || [ -e "${RETRY_FILE}" ]; then
       rm -f "${RETRY_FILE}"
-      ensure_pair_channel
+      pair_channel_serial=$((pair_channel_serial + 1))
+      pair_channel_id="${PAIR_CHANNEL_PREFIX}-$(date '+%s')-$$-${pair_channel_serial}"
+      if ! ensure_pair_channel "${pair_channel_id}"; then
+        log "pairing notification skipped: no dedicated high-priority channel"
+        sleep "${poll_sleep}"
+        continue
+      fi
       remove_notification "${STATUS_NOTIFICATION_ID}"
       notify "${PAIR_NOTIFICATION_ID}" "ADB pairing available" \
         "Tap Enter PIN and enter the six-digit pairing PIN" \
-        --channel "${PAIR_CHANNEL_ID}" --ongoing --priority max --button1 "Enter PIN" --button1-action "${action}"
+        --channel "${pair_channel_id}" --ongoing --priority max --button1 "Enter PIN" --button1-action "${action}"
       log "pairing notification posted host=${discovered_pair_host} port=${discovered_pair_port}"
       pair_notice_key="${current_pair_key}"
     fi
