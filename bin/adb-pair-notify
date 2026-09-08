@@ -1,349 +1,325 @@
-#!/data/data/com.termux/files/usr/bin/bash
-set -euo pipefail
-export PATH="/data/data/com.termux/files/usr/bin:/data/data/com.termux/files/usr/bin/applets:${PATH:-}"
+#!/data/data/com.termux/files/usr/bin/python
+"""Persistent Android wireless-debugging pairing monitor."""
+import fcntl
+import os
+import re
+import shutil
+import signal
+import socket
+import struct
+import subprocess
+import sys
+import time
+from pathlib import Path
 
-STATE_DIR="${HOME}/.cache/adb-pair-notify"
-LOG_FILE="${STATE_DIR}/attempt.log"
-STATE_FILE="${STATE_DIR}/state"
-LOCK_FILE="${STATE_DIR}/monitor.pid"
-INPUT_FILE="${STATE_DIR}/input.pid"
-SUBMIT_LOCK="${STATE_DIR}/submit.lock"
-RETRY_FILE="${STATE_DIR}/retry"
-SELF="${HOME}/bin/adb-pair-notify"
-MDNS="${HOME}/bin/adb-mdns-discover"
-PAIR_NOTIFICATION_ID="adb-pair"
-STATUS_NOTIFICATION_ID="adb-pair-status"
-STATUS_CHANNEL_ID="adb-pairing-status"
-PAIR_CHANNEL_PREFIX="adb-pairing-pin"
-pair_channel_serial=0
-
-mkdir -p "${STATE_DIR}"
-touch "${LOG_FILE}"
-
-log() {
-  printf '%s %s\n' "$(date '+%F %T')" "$*" >> "${LOG_FILE}"
-}
-
-die() {
-  echo "adb-pair-notify: $*" >&2
-  exit 2
-}
-
-remove_notification() {
-  if command -v termux-notification-remove >/dev/null 2>&1; then
-    termux-notification-remove "$1" >/dev/null 2>&1 || true
-  fi
-}
-
-notify() {
-  local notification_id="$1"
-  shift
-  remove_notification "${notification_id}"
-  termux-notification --id "${notification_id}" --title "$1" --content "$2" "${@:3}" \
-    >>"${LOG_FILE}" 2>&1 || log "notification failed: $1"
-}
-
-ensure_status_channel() {
-  if command -v termux-notification-channel >/dev/null 2>&1; then
-    termux-notification-channel "${STATUS_CHANNEL_ID}" "ADB pairing status" >/dev/null 2>&1 ||
-      log "notification channel setup failed: ${STATUS_CHANNEL_ID}"
-  fi
-}
-
-ensure_pair_channel() {
-  if [ -x "${PREFIX}/libexec/termux-api" ]; then
-    "${PREFIX}/libexec/termux-api" NotificationChannel \
-      --es id "$1" \
-      --es name "ADB pairing PIN" \
-      --es priority max >/dev/null 2>&1 ||
-      { log "notification channel setup failed: $1"; return 1; }
-  else
-    log "notification channel setup unavailable: termux-api client not found"
-    return 1
-  fi
-}
+HOME = os.environ.get("HOME", "/data/data/com.termux/files/home")
+PREFIX = os.environ.get("PREFIX", "/data/data/com.termux/files/usr")
+STATE_DIR = Path(HOME) / ".cache/adb-pair-notify"
+LOG_FILE = STATE_DIR / "attempt.log"
+STATE_FILE = STATE_DIR / "state"
+LOCK_FILE = STATE_DIR / "monitor.pid"
+INPUT_FILE = STATE_DIR / "input.pid"
+SUBMIT_LOCK = STATE_DIR / "submit.lock"
+RETRY_FILE = STATE_DIR / "retry"
+SELF = Path(HOME) / "bin/adb-pair-notify"
+PAIR_NOTIFICATION_ID = "adb-pair"
+STATUS_NOTIFICATION_ID = "adb-pair-status"
+STATUS_CHANNEL_ID = "adb-pairing-status"
+PAIR_CHANNEL_PREFIX = "adb-pairing-pin"
+SERVICES = {"_adb-tls-pairing._tcp.local": "pairing", "_adb-tls-connect._tcp.local": "connect"}
+GROUP = "224.0.0.251"
+MDNS_PORT = 5353
 
 
-notify_status() {
-  ensure_status_channel
-  notify "${STATUS_NOTIFICATION_ID}" "$1" "$2" \
-    --channel "${STATUS_CHANNEL_ID}" --priority default "${@:3}"
-}
+def log(message):
+    LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with LOG_FILE.open("a") as f:
+        f.write(time.strftime("%Y-%m-%d %H:%M:%S ") + message + "\n")
 
-write_state() {
-  local host="$1" debug_port="$2" pair_host="$3" pair_port="$4"
-  printf '%s|%s|%s|%s\n' "${host}" "${debug_port}" "${pair_host}" "${pair_port}" \
-    > "${STATE_FILE}.new"
-  mv -f "${STATE_FILE}.new" "${STATE_FILE}"
-}
 
-input_active() {
-  local input_pid
-  if [ ! -d "${SUBMIT_LOCK}" ] || [ ! -s "${INPUT_FILE}" ]; then
-    return 1
-  fi
-  read -r input_pid < "${INPUT_FILE}" || return 1
-  if kill -0 "${input_pid}" 2>/dev/null; then
-    return 0
-  fi
-  rm -f "${INPUT_FILE}"
-  rmdir "${SUBMIT_LOCK}" 2>/dev/null || true
-  return 1
-}
+def run(args, timeout=None):
+    try:
+        return subprocess.run(args, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                              timeout=timeout, check=False).stdout.strip()
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return str(e)
 
-format_endpoint() {
-  local host="$1" port="$2"
-  case "${host}" in
-    *:*) printf '[%s]:%s' "${host}" "${port}" ;;
-    *) printf '%s:%s' "${host}" "${port}" ;;
-  esac
-}
 
-adb_connected() {
-  local endpoint
-  endpoint="$(format_endpoint "$1" "$2")"
-  adb devices 2>>"${LOG_FILE}" | awk -v endpoint="${endpoint}" \
-    '$1 == endpoint && $2 == "device" {found=1} END {exit !found}'
-}
+def format_endpoint(host, port):
+    return f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
 
-adb_connect_succeeded() {
-  local endpoint="$1" response="$2"
-  [[ "${response}" == *"connected to ${endpoint}"* ]]
-}
 
-probe_tcp_port() {
-  local host="$1" port="$2" probe_status result
-  set +e
-  timeout 2 bash -c 'exec 3<>"/dev/tcp/$1/$2"' _ "$host" "$port" >/dev/null 2>&1
-  probe_status=$?
-  set -e
-  case "$probe_status" in
-    0) result=listening ;;
-    124) result=timed-out ;;
-    1) result=refused-or-unavailable ;;
-    *) result="error-$probe_status" ;;
-  esac
-  log "tcp probe host=$host port=$port result=$result"
-}
+def remove_notification(notification_id):
+    command = shutil.which("termux-notification-remove")
+    if command:
+        subprocess.run([command, notification_id], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
 
-tcp_port_open() {
-  local host="$1" port="$2"
-  set +e
-  timeout 1 bash -c 'exec 3<>"/dev/tcp/$1/$2"' _ "${host}" "${port}" >/dev/null 2>&1
-  local status=$?
-  set -e
-  return "${status}"
-}
 
-submit() {
-  local reply="$1" host debug_port pair_host pair_port pin output pair_endpoint debug_endpoint
-  local input_marker="${INPUT_FILE}.new"
+def notify(notification_id, title, content, *extra):
+    remove_notification(notification_id)
+    command = shutil.which("termux-notification")
+    if not command:
+        log("notification failed: termux-notification unavailable")
+        return
+    result = subprocess.run([command, "--id", notification_id, "--title", title, "--content", content, *extra],
+                            text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False)
+    if result.returncode:
+        log(f"notification failed: {title}: {result.stdout.strip()}")
 
-  if ! mkdir "${SUBMIT_LOCK}" 2>/dev/null; then
-    log "submit rejected: another pairing attempt is active"
-    exit 0
-  fi
-  printf '%s\n' "$$" > "${input_marker}"
-  mv -f "${input_marker}" "${INPUT_FILE}"
-  trap 'rm -f "${INPUT_FILE}"; rmdir "${SUBMIT_LOCK}" 2>/dev/null || true' EXIT
 
-  log "submit started pid=$$ reply_length=${#reply}"
-  IFS='|' read -r host debug_port pair_host pair_port < "${STATE_FILE}"
-  read -r pin _ <<< "${reply}"
-  [[ "${pin}" =~ ^[0-9]{6}$ ]] || {
-    : > "${RETRY_FILE}"
-    notify_status "ADB pairing" "PIN must be exactly six digits"
-    exit 2
-  }
-  [[ "${host}" != "" && "${debug_port}" =~ ^[0-9]{1,5}$ ]] || {
-    : > "${RETRY_FILE}"
-    notify_status "ADB pairing" "ADB debugging endpoint is no longer available"
-    exit 2
-  }
-  [[ "${pair_host}" != "" && "${pair_port}" =~ ^[0-9]{1,5}$ ]] || {
-    : > "${RETRY_FILE}"
-    notify_status "ADB pairing" "Pairing service is no longer available"
-    exit 2
-  }
+def ensure_status_channel():
+    command = shutil.which("termux-notification-channel")
+    if command and subprocess.run([command, STATUS_CHANNEL_ID, "ADB pairing status"], stdout=subprocess.DEVNULL,
+                                  stderr=subprocess.DEVNULL, check=False).returncode:
+        log(f"notification channel setup failed: {STATUS_CHANNEL_ID}")
 
-  pair_endpoint="$(format_endpoint "${pair_host}" "${pair_port}")"
-  debug_endpoint="$(format_endpoint "${host}" "${debug_port}")"
-  log "adb pair started pid=$$ endpoint=${pair_endpoint}"
-  set +e
-  output="$(timeout 20 adb pair "${pair_endpoint}" "${pin}" 2>&1)"
-  pair_status=$?
-  set -e
-  log "adb pair finished pid=$$ status=${pair_status} output=${output@Q}"
-  if [ "${pair_status}" -ne 0 ]; then
-    : > "${RETRY_FILE}"
-    notify_status "ADB pairing failed" "${output:0:180}"
-    exit 1
-  fi
-  connect_attempt=1
-  connect_succeeded=1
-  connect_output=""
-  while [ "${connect_attempt}" -le 3 ]; do
-    if [ "${connect_attempt}" -gt 1 ]; then
-      backoff=$((connect_attempt - 1))
-      log "adb connect retry pid=$$ attempt=${connect_attempt} sleep=${backoff}s endpoint=${debug_endpoint}"
-      sleep "${backoff}"
-    fi
-    log "adb connect started pid=$$ attempt=${connect_attempt} endpoint=${debug_endpoint}"
-    set +e
-    attempt_output="$(timeout 20 adb connect "${debug_endpoint}" 2>&1)"
-    connect_status=$?
-    set -e
-    connect_output="${attempt_output}"
-    output="${output}
-${attempt_output}"
-    log "adb connect finished pid=$$ attempt=${connect_attempt} status=${connect_status} output=${attempt_output@Q}"
-    if [ "${connect_status}" -ne 0 ] || ! adb_connect_succeeded "${debug_endpoint}" "${attempt_output}"; then
-      probe_tcp_port "${host}" "${debug_port}"
-    fi
-    if [ "${connect_status}" -eq 0 ] && adb_connect_succeeded "${debug_endpoint}" "${attempt_output}"; then
-      connect_succeeded=0
-      break
-    fi
-    connect_attempt=$((connect_attempt + 1))
-  done
-  if [ "${connect_succeeded}" -ne 0 ]; then
-    : > "${RETRY_FILE}"
-    log "adb connect failed after 3 attempts endpoint=${debug_endpoint}"
-    notify_status "ADB paired; connect failed" "${output:0:180}"
-    exit 1
-  fi
-  log "adb success: ${output}"
-}
 
-if [ "${1:-}" = "--submit" ]; then
-  [ "$#" -eq 2 ] || die "internal submit syntax"
-  submit "$2"
-  exit 0
-fi
+def ensure_pair_channel(channel_id):
+    command = Path(PREFIX) / "libexec/termux-api"
+    if not command.is_file() or not os.access(command, os.X_OK):
+        log("notification channel setup unavailable: termux-api client not found")
+        return False
+    args = [str(command), "NotificationChannel", "--es", "id", channel_id, "--es", "name", "ADB pairing PIN", "--es", "priority", "max"]
+    if subprocess.run(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False).returncode:
+        log(f"notification channel setup failed: {channel_id}")
+        return False
+    return True
 
-if [ "${1:-}" = "--daemon" ]; then
-  [ "$#" -eq 1 ] || die "usage: adb-pair-notify [--daemon]"
-  exec </dev/null >>"${LOG_FILE}" 2>&1
-  set --
-fi
 
-[ "$#" -eq 0 ] || die "usage: adb-pair-notify [--daemon]"
+def notify_status(title, content, *extra):
+    ensure_status_channel()
+    notify(STATUS_NOTIFICATION_ID, title, content, "--channel", STATUS_CHANNEL_ID, "--priority", "default", *extra)
 
-if [ -s "${LOCK_FILE}" ]; then
-  read -r old_pid < "${LOCK_FILE}" || true
-  if [ -n "${old_pid:-}" ] && kill -0 "${old_pid}" 2>/dev/null; then
-    die "monitor already running (pid ${old_pid})"
-  fi
-fi
-printf '%s\n' "$$" > "${LOCK_FILE}"
-trap 'rm -f "${LOCK_FILE}" "${INPUT_FILE}" "${STATE_FILE}.new"' EXIT
-trap 'exit 143' INT TERM
-write_state "" "" "" ""
 
-action="/data/data/com.termux/files/usr/bin/bash ${SELF} --submit \"\$REPLY\""
-next_reminder=0
-pair_notice_key=""
-poll_sleep=9
+def write_state(host, debug_port, pair_host, pair_port):
+    tmp = Path(str(STATE_FILE) + ".new")
+    tmp.write_text(f"{host}|{debug_port}|{pair_host}|{pair_port}\n")
+    tmp.replace(STATE_FILE)
 
-log "persistent monitor started"
-while :; do
-  discovery="$(${MDNS} 1 2>>"${LOG_FILE}" || true)"
-  discovered_host=""
-  discovered_debug_port=""
-  discovered_pair_host=""
-  discovered_pair_port=""
 
-  connect_fallback_host=""
-  connect_fallback_port=""
-  while IFS=$'	' read -r _ candidate_host candidate_port; do
-    [[ "${candidate_port}" =~ ^[0-9]{1,5}$ ]] || continue
-    if [ -z "${connect_fallback_host}" ]; then
-      connect_fallback_host="${candidate_host}"
-      connect_fallback_port="${candidate_port}"
-    fi
-    if tcp_port_open "${candidate_host}" "${candidate_port}"; then
-      discovered_host="${candidate_host}"
-      discovered_debug_port="${candidate_port}"
-      log "debug endpoint selected host=${candidate_host} port=${candidate_port} (TCP listener reachable)"
-      break
-    fi
-  done <<< "$(printf '%s\n' "${discovery}" | awk '$1 == "connect" {print}')"
-  if [ -z "${discovered_debug_port}" ] && [ -n "${connect_fallback_host}" ]; then
-    discovered_host="${connect_fallback_host}"
-    discovered_debug_port="${connect_fallback_port}"
-    log "debug endpoint selected host=${discovered_host} port=${discovered_debug_port} (fallback; no TCP listener reachable)"
-  fi
-  pair_line="$(printf '%s\n' "${discovery}" | awk '$1 == "pairing" {print; exit}')"
-  if [ -n "${pair_line}" ]; then
-    read -r _ discovered_pair_host discovered_pair_port <<< "${pair_line}"
-    [[ "${discovered_pair_port}" =~ ^[0-9]{1,5}$ ]] || {
-      discovered_pair_host=""
-      discovered_pair_port=""
-    }
-  fi
-  [ -n "${discovered_host}" ] || discovered_host="${discovered_pair_host}"
-  [ -n "${discovered_pair_host}" ] || discovered_pair_host="${discovered_host}"
+def read_state():
+    try:
+        values = STATE_FILE.read_text().strip().split("|")
+        return (values + [""] * 4)[:4]
+    except OSError:
+        return ["", "", "", ""]
 
-  # adb-mdns-discover waits one second for replies. Use a four-second sleep
-  # after a discovered debugging endpoint to make the complete poll cycle
-  # approximately five seconds; otherwise retain the ten-second cycle.
-  poll_sleep=9
-  if [ -n "${discovered_host}" ] && [ -n "${discovered_debug_port}" ]; then
-    poll_sleep=4
-  fi
 
-  now="$(date +%s)"
-  if input_active; then
-    sleep 1
-    continue
-  fi
+def input_active():
+    if not SUBMIT_LOCK.is_dir() or not INPUT_FILE.is_file():
+        return False
+    try:
+        pid = int(INPUT_FILE.read_text().strip())
+        os.kill(pid, 0)
+        return True
+    except (OSError, ValueError):
+        INPUT_FILE.unlink(missing_ok=True)
+        try: SUBMIT_LOCK.rmdir()
+        except OSError: pass
+        return False
 
-  if [ -n "${discovered_host}" ] && [ -n "${discovered_debug_port}" ] && \
-      adb_connected "${discovered_host}" "${discovered_debug_port}"; then
-    remove_notification "${PAIR_NOTIFICATION_ID}"
-    remove_notification "${STATUS_NOTIFICATION_ID}"
-    pair_notice_key=""
-    rm -f "${RETRY_FILE}"
-    write_state "${discovered_host}" "${discovered_debug_port}" "${discovered_pair_host}" "${discovered_pair_port}"
-    sleep "${poll_sleep}"
-    continue
-  fi
 
-  if [ -n "${discovered_host}" ] && [ -n "${discovered_pair_port}" ]; then
-    write_state "${discovered_host}" "${discovered_debug_port}" "${discovered_pair_host}" "${discovered_pair_port}"
-    current_pair_key="${discovered_pair_host}:${discovered_pair_port}"
-    if [ "${current_pair_key}" != "${pair_notice_key}" ] || [ -e "${RETRY_FILE}" ]; then
-      rm -f "${RETRY_FILE}"
-      pair_channel_serial=$((pair_channel_serial + 1))
-      pair_channel_id="${PAIR_CHANNEL_PREFIX}-$(date '+%s')-$$-${pair_channel_serial}"
-      if ! ensure_pair_channel "${pair_channel_id}"; then
-        log "pairing notification skipped: no dedicated high-priority channel"
-        sleep "${poll_sleep}"
-        continue
-      fi
-      remove_notification "${STATUS_NOTIFICATION_ID}"
-      notify "${PAIR_NOTIFICATION_ID}" "ADB pairing available" \
-        "Tap Enter PIN and enter the six-digit pairing PIN" \
-        --channel "${pair_channel_id}" --priority high --vibrate 100,200,100 \
-        --button1 "Enter PIN" --button1-action "${action}"
-      log "pairing notification posted host=${discovered_pair_host} port=${discovered_pair_port}"
-      pair_notice_key="${current_pair_key}"
-    fi
-    sleep "${poll_sleep}"
-    continue
-  fi
+def tcp_open(host, port, timeout=1):
+    try:
+        with socket.create_connection((host, int(port)), timeout=timeout):
+            return True
+    except OSError:
+        return False
 
-  write_state "${discovered_host}" "${discovered_debug_port}" "" ""
-  pair_notice_key=""
-  remove_notification "${PAIR_NOTIFICATION_ID}"
-  if [ "${now}" -ge "${next_reminder}" ]; then
-    reminder_content="Pair this device to reconnect ADB"
-    if [ -n "${discovered_host}" ] && [ -n "${discovered_debug_port}" ]; then
-      reminder_content="ADB debugging endpoint: $(format_endpoint "${discovered_host}" "${discovered_debug_port}"). Pair this device to reconnect ADB"
-    fi
-    notify_status "Wireless debugging is not paired" "${reminder_content}" --priority default
-    log "not-paired reminder posted"
-    next_reminder=$((now + 30))
-  fi
-  sleep "${poll_sleep}"
-done
+
+def adb_connected(host, port):
+    endpoint = format_endpoint(host, port)
+    output = run(["adb", "devices"], timeout=10)
+    return any(line.split()[:2] == [endpoint, "device"] for line in output.splitlines())
+
+
+def encode_name(name):
+    return b"".join(bytes([len(part)]) + part.encode() for part in name.split(".")) + b"\0"
+
+
+def read_name(packet, offset):
+    labels, jumped, end = [], False, offset
+    while True:
+        length = packet[offset]
+        if length == 0:
+            return ".".join(labels), (offset + 1 if not jumped else end)
+        if length & 0xc0 == 0xc0:
+            pointer = ((length & 0x3f) << 8) | packet[offset + 1]
+            label, _ = read_name(packet, pointer)
+            labels.append(label)
+            if not jumped: end = offset + 2
+            jumped = True
+            return ".".join(labels), end
+        offset += 1
+        labels.append(packet[offset:offset + length].decode(errors="replace"))
+        offset += length
+
+
+def records(packet):
+    if len(packet) < 12: return []
+    questions, answers, authority, additional = struct.unpack_from("!HHHH", packet, 4)
+    offset, result = 12, []
+    for _ in range(questions):
+        _, offset = read_name(packet, offset); offset += 4
+    for _ in range(answers + authority + additional):
+        name, offset = read_name(packet, offset)
+        rtype, _, _, length = struct.unpack_from("!HHIH", packet, offset); offset += 10
+        data_offset = offset
+        if rtype == 12:
+            value, _ = read_name(packet, data_offset); result.append((name, "PTR", value))
+        elif rtype == 33 and length >= 6:
+            _, _, port = struct.unpack_from("!HHH", packet, data_offset)
+            target, _ = read_name(packet, data_offset + 6); result.append((name, "SRV", (target, port)))
+        elif rtype == 1 and length == 4:
+            result.append((name, "A", socket.inet_ntoa(packet[data_offset:data_offset + 4])))
+        offset += length
+    return result
+
+
+def interface_addresses(sock):
+    addresses = []
+    try:
+        interface_names = socket.if_nameindex()
+    except OSError:
+        interface_names = []
+    for _, name in interface_names:
+        if name == "lo": continue
+        try:
+            request = struct.pack("256s", name.encode())
+            result = fcntl.ioctl(sock.fileno(), 0x8915, request)
+            address = socket.inet_ntoa(result[20:24])
+            if not address.startswith("127.") and address not in addresses: addresses.append(address)
+        except (OSError, ValueError): pass
+    if not addresses:
+        try:
+            output = subprocess.check_output(["ifconfig"], stderr=subprocess.DEVNULL, text=True)
+        except (OSError, subprocess.SubprocessError):
+            output = ""
+        for line in output.splitlines():
+            fields = line.split()
+            if len(fields) >= 2 and fields[0] == "inet" and not fields[1].startswith("127.") and fields[1] not in addresses:
+                addresses.append(fields[1])
+    return addresses or ["0.0.0.0"]
+
+
+def discover(seconds=1):
+    query = b"".join(encode_name(name) + struct.pack("!HH", 12, 1) for name in SERVICES)
+    packet = struct.pack("!HHHHHH", 0, 0, len(SERVICES), 0, 0, 0) + query
+    found = {}
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind(("0.0.0.0", MDNS_PORT))
+        interfaces = interface_addresses(sock)
+        for interface in interfaces:
+            try: sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, struct.pack("=4s4s", socket.inet_aton(GROUP), socket.inet_aton(interface)))
+            except OSError: pass
+        for interface in interfaces:
+            try:
+                sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(interface))
+                sock.sendto(packet, (GROUP, MDNS_PORT))
+            except OSError: pass
+        sock.settimeout(0.5); deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            try: data, source = sock.recvfrom(65535)
+            except socket.timeout: continue
+            parsed = records(data)
+            srv = {n: v for n, k, v in parsed if k == "SRV"}
+            ipv4 = {n: v for n, k, v in parsed if k == "A"}
+            for name, kind, value in parsed:
+                if kind == "PTR" and name in SERVICES and value in srv:
+                    target, port = srv[value]
+                    found[(SERVICES[name], ipv4.get(target, source[0]), port)] = True
+        sock.close()
+    except OSError as e:
+        log(f"mDNS discovery failed: {e}")
+    return sorted(found)
+
+
+def submit(reply):
+    try: SUBMIT_LOCK.mkdir()
+    except FileExistsError:
+        log("submit rejected: another pairing attempt is active"); return 0
+    INPUT_FILE.write_text(f"{os.getpid()}\n")
+    try:
+        host, debug_port, pair_host, pair_port = read_state()
+        pin = reply.split()[0] if reply.split() else ""
+        if not re.fullmatch(r"[0-9]{6}", pin):
+            RETRY_FILE.touch(); notify_status("ADB pairing", "PIN must be exactly six digits"); return 2
+        if not host or not re.fullmatch(r"[0-9]{1,5}", debug_port):
+            RETRY_FILE.touch(); notify_status("ADB pairing", "ADB debugging endpoint is no longer available"); return 2
+        if not pair_host or not re.fullmatch(r"[0-9]{1,5}", pair_port):
+            RETRY_FILE.touch(); notify_status("ADB pairing", "Pairing service is no longer available"); return 2
+        pair_endpoint, debug_endpoint = format_endpoint(pair_host, pair_port), format_endpoint(host, debug_port)
+        log(f"adb pair started pid={os.getpid()} endpoint={pair_endpoint}")
+        pair = run(["adb", "pair", pair_endpoint, pin], timeout=20)
+        log(f"adb pair finished pid={os.getpid()} status={'0' if 'Successfully paired' in pair else '1'} output={pair!r}")
+        if "Successfully paired" not in pair:
+            RETRY_FILE.touch(); notify_status("ADB pairing failed", pair[:180]); return 1
+        for attempt in range(1, 4):
+            if attempt > 1: time.sleep(attempt - 1)
+            output = run(["adb", "connect", debug_endpoint], timeout=20)
+            log(f"adb connect finished pid={os.getpid()} attempt={attempt} output={output!r}")
+            if "connected to " + debug_endpoint in output:
+                log(f"adb success: {pair}\n{output}"); return 0
+        RETRY_FILE.touch(); notify_status("ADB paired; connect failed", pair[:180]); return 1
+    finally:
+        INPUT_FILE.unlink(missing_ok=True)
+        try: SUBMIT_LOCK.rmdir()
+        except OSError: pass
+
+
+def daemon():
+    STATE_DIR.mkdir(parents=True, exist_ok=True); LOG_FILE.touch()
+    if LOCK_FILE.exists():
+        try:
+            old = int(LOCK_FILE.read_text())
+            os.kill(old, 0); raise SystemExit(f"monitor already running (pid {old})")
+        except (OSError, ValueError): pass
+    LOCK_FILE.write_text(f"{os.getpid()}\n"); write_state("", "", "", "")
+    pair_notice_key, channel_serial, next_reminder = "", 0, 0
+    def stop(_sig, _frame):
+        LOCK_FILE.unlink(missing_ok=True); INPUT_FILE.unlink(missing_ok=True); sys.exit(143)
+    signal.signal(signal.SIGINT, stop); signal.signal(signal.SIGTERM, stop)
+    action = f'/data/data/com.termux/files/usr/bin/bash {SELF} --submit "$REPLY"'
+    log("persistent monitor started")
+    while True:
+        discovery = discover(1)
+        connects = [(h, p) for kind, h, p in discovery if kind == "connect"]
+        pairings = [(h, p) for kind, h, p in discovery if kind == "pairing"]
+        host = debug_port = pair_host = pair_port = ""
+        fallback = connects[0] if connects else None
+        for candidate_host, candidate_port in connects:
+            if tcp_open(candidate_host, candidate_port): host, debug_port = candidate_host, str(candidate_port); break
+        if not debug_port and fallback: host, debug_port = fallback[0], str(fallback[1])
+        if pairings: pair_host, pair_port = pairings[0][0], str(pairings[0][1])
+        host = host or pair_host; pair_host = pair_host or host
+        poll_sleep = 4 if host and debug_port else 9
+        now = int(time.time())
+        if input_active(): time.sleep(1); continue
+        if host and debug_port and adb_connected(host, debug_port):
+            remove_notification(PAIR_NOTIFICATION_ID); remove_notification(STATUS_NOTIFICATION_ID); pair_notice_key = ""; RETRY_FILE.unlink(missing_ok=True); write_state(host, debug_port, pair_host, pair_port); time.sleep(poll_sleep); continue
+        if host and pair_port:
+            write_state(host, debug_port, pair_host, pair_port)
+            key = f"{pair_host}:{pair_port}"
+            if key != pair_notice_key or RETRY_FILE.exists():
+                RETRY_FILE.unlink(missing_ok=True); channel_serial += 1; channel = f"{PAIR_CHANNEL_PREFIX}-{int(time.time())}-{os.getpid()}-{channel_serial}"
+                if ensure_pair_channel(channel):
+                    remove_notification(STATUS_NOTIFICATION_ID)
+                    notify(PAIR_NOTIFICATION_ID, "ADB pairing available", "Tap Enter PIN and enter the six-digit pairing PIN", "--channel", channel, "--priority", "high", "--vibrate", "100,200,100", "--button1", "Enter PIN", "--button1-action", action)
+                    log(f"pairing notification posted host={pair_host} port={pair_port}"); pair_notice_key = key
+            time.sleep(poll_sleep); continue
+        write_state(host, debug_port, "", ""); pair_notice_key = ""; remove_notification(PAIR_NOTIFICATION_ID)
+        if now >= next_reminder:
+            content = "Pair this device to reconnect ADB" if not (host and debug_port) else f"ADB debugging endpoint: {format_endpoint(host, debug_port)}. Pair this device to reconnect ADB"
+            notify_status("Wireless debugging is not paired", content, "--priority", "default"); log("not-paired reminder posted"); next_reminder = now + 30
+        time.sleep(poll_sleep)
+
+
+if __name__ == "__main__":
+    if len(sys.argv) == 3 and sys.argv[1] == "--submit": raise SystemExit(submit(sys.argv[2]))
+    if len(sys.argv) == 2 and sys.argv[1] == "--daemon":
+        log_fd = os.open(LOG_FILE, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+        os.dup2(log_fd, 1); os.dup2(log_fd, 2); os.close(log_fd)
+    elif len(sys.argv) != 1: raise SystemExit("usage: adb-pair-notify [--daemon]")
+    daemon()
