@@ -13,6 +13,7 @@ SELF="${HOME}/bin/adb-pair-notify"
 MDNS="${HOME}/bin/adb-mdns-discover"
 NOTIFICATION_ID="adb-pair"
 STATUS_CHANNEL_ID="adb-pairing-status"
+PAIR_CHANNEL_ID="adb-pairing-pin-v1"
 
 mkdir -p "${STATE_DIR}"
 touch "${LOG_FILE}"
@@ -44,6 +45,20 @@ ensure_status_channel() {
       log "notification channel setup failed: ${STATUS_CHANNEL_ID}"
   fi
 }
+
+ensure_pair_channel() {
+  if command -v am >/dev/null 2>&1; then
+    am broadcast --user 0 -n com.termux.api/.TermuxApiReceiver \
+      --es api_method NotificationChannel \
+      --es id "${PAIR_CHANNEL_ID}" \
+      --es name "ADB pairing PIN" \
+      --es priority max >/dev/null 2>&1 ||
+      log "notification channel setup failed: ${PAIR_CHANNEL_ID}"
+  else
+    log "notification channel setup unavailable: am not found"
+  fi
+}
+
 
 notify_status() {
   ensure_status_channel
@@ -293,8 +308,9 @@ while :; do
     current_pair_key="${discovered_pair_host}:${discovered_pair_port}"
     if [ "${current_pair_key}" != "${pair_notice_key}" ] || [ -e "${RETRY_FILE}" ]; then
       rm -f "${RETRY_FILE}"
+      ensure_pair_channel
       notify "ADB pairing available" "Tap Enter PIN and enter the six-digit pairing PIN" \
-        --ongoing --priority max --button1 "Enter PIN" --button1-action "${action}"
+        --channel "${PAIR_CHANNEL_ID}" --ongoing --priority max --button1 "Enter PIN" --button1-action "${action}"
       log "pairing notification posted host=${discovered_pair_host} port=${discovered_pair_port}"
       pair_notice_key="${current_pair_key}"
     fi
