@@ -324,7 +324,7 @@ while :; do
       remove_notification "${STATUS_NOTIFICATION_ID}"
       notify "${PAIR_NOTIFICATION_ID}" "ADB pairing available" \
         "Tap Enter PIN and enter the six-digit pairing PIN" \
-        --channel "${pair_channel_id}" --priority high --vibrate 0 \
+        --channel "${pair_channel_id}" --priority high --vibrate 100,200,100 \
         --button1 "Enter PIN" --button1-action "${action}"
       log "pairing notification posted host=${discovered_pair_host} port=${discovered_pair_port}"
       pair_notice_key="${current_pair_key}"
