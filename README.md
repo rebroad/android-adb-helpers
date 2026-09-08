@@ -64,12 +64,13 @@ done
    pairing PIN. The helper discovers the pairing port through mDNS, performs
    `adb pair`, and then connects to the debugging endpoint.
 
-The helper polls mDNS every ten seconds. It uses a single notification ID, so
+The helper polls mDNS approximately every five seconds while a debugging endpoint is advertised, and every ten seconds otherwise. It uses a single notification ID, so
 notifications are replaced rather than stacked. The PIN notification is not
 refreshed while the same pairing endpoint remains available, so opening its
 inline reply cannot be interrupted by the next poll. Pairing submissions are
-serialized, and each `adb pair` and `adb connect` attempt is logged with its
-exit status and output. When Wireless Debugging is not paired, it displays a
+serialized, and each `adb pair` and `adb connect` attempt is logged with its exit status and output.
+After an unsuccessful connect, it also probes the debugging TCP port so the log
+can distinguish a missing listener from a TLS or ADB handshake failure. When Wireless Debugging is not paired, it displays a
 reminder; while the pairing screen is active, it displays the PIN-entry
 notification.
 

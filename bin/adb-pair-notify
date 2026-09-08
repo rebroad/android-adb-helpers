@@ -78,6 +78,21 @@ adb_connect_succeeded() {
   [[ "${response}" == *"connected to ${endpoint}"* ]]
 }
 
+probe_tcp_port() {
+  local host="$1" port="$2" probe_status result
+  set +e
+  timeout 2 bash -c 'exec 3<>"/dev/tcp/$1/$2"' _ "$host" "$port" >/dev/null 2>&1
+  probe_status=$?
+  set -e
+  case "$probe_status" in
+    0) result=listening ;;
+    124) result=timed-out ;;
+    1) result=refused-or-unavailable ;;
+    *) result="error-$probe_status" ;;
+  esac
+  log "tcp probe host=$host port=$port result=$result"
+}
+
 submit() {
   local reply="$1" host debug_port pair_host pair_port pin output pair_endpoint debug_endpoint
   local input_marker="${INPUT_FILE}.new"
@@ -140,6 +155,9 @@ submit() {
     output="${output}
 ${attempt_output}"
     log "adb connect finished pid=$$ attempt=${connect_attempt} status=${connect_status} output=${attempt_output@Q}"
+    if [ "${connect_status}" -ne 0 ] || ! adb_connect_succeeded "${debug_endpoint}" "${attempt_output}"; then
+      probe_tcp_port "${host}" "${debug_port}"
+    fi
     if [ "${connect_status}" -eq 0 ] && adb_connect_succeeded "${debug_endpoint}" "${attempt_output}"; then
       connect_succeeded=0
       break
