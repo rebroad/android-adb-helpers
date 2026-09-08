@@ -26,6 +26,8 @@ PAIR_NOTIFICATION_ID = "adb-pair"
 STATUS_NOTIFICATION_ID = "adb-pair-status"
 STATUS_CHANNEL_ID = "adb-pairing-status"
 PAIR_CHANNEL_PREFIX = "adb-pairing-pin"
+pair_notification_visible = False
+status_notification_visible = False
 SERVICES = {"_adb-tls-pairing._tcp.local": "pairing", "_adb-tls-connect._tcp.local": "connect"}
 GROUP = "224.0.0.251"
 MDNS_PORT = 5353
@@ -50,13 +52,18 @@ def format_endpoint(host, port):
 
 
 def remove_notification(notification_id):
+    global pair_notification_visible, status_notification_visible
     command = shutil.which("termux-notification-remove")
     if command:
         subprocess.run([command, notification_id], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+    if notification_id == PAIR_NOTIFICATION_ID:
+        pair_notification_visible = False
+    elif notification_id == STATUS_NOTIFICATION_ID:
+        status_notification_visible = False
 
 
 def notify(notification_id, title, content, *extra):
-    remove_notification(notification_id)
+    global pair_notification_visible, status_notification_visible
     command = shutil.which("termux-notification")
     if not command:
         log("notification failed: termux-notification unavailable")
@@ -65,6 +72,10 @@ def notify(notification_id, title, content, *extra):
                             text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False)
     if result.returncode:
         log(f"notification failed: {title}: {result.stdout.strip()}")
+    elif notification_id == PAIR_NOTIFICATION_ID:
+        pair_notification_visible = True
+    elif notification_id == STATUS_NOTIFICATION_ID:
+        status_notification_visible = True
 
 
 def ensure_status_channel():
@@ -278,6 +289,7 @@ def daemon():
         except (OSError, ValueError): pass
     LOCK_FILE.write_text(f"{os.getpid()}\n"); write_state("", "", "", "")
     pair_notice_key, channel_serial, next_reminder = "", 0, 0
+    last_state = "unknown"
     def stop(_sig, _frame):
         LOCK_FILE.unlink(missing_ok=True); INPUT_FILE.unlink(missing_ok=True); sys.exit(143)
     signal.signal(signal.SIGINT, stop); signal.signal(signal.SIGTERM, stop)
@@ -298,18 +310,28 @@ def daemon():
         now = int(time.time())
         if input_active(): time.sleep(1); continue
         if host and debug_port and adb_connected(host, debug_port):
-            remove_notification(PAIR_NOTIFICATION_ID); remove_notification(STATUS_NOTIFICATION_ID); pair_notice_key = ""; RETRY_FILE.unlink(missing_ok=True); write_state(host, debug_port, pair_host, pair_port); time.sleep(poll_sleep); continue
+            if last_state != "connected":
+                if pair_notification_visible:
+                    remove_notification(PAIR_NOTIFICATION_ID)
+                if status_notification_visible:
+                    remove_notification(STATUS_NOTIFICATION_ID)
+            pair_notice_key = ""; RETRY_FILE.unlink(missing_ok=True); write_state(host, debug_port, pair_host, pair_port); last_state = "connected"; time.sleep(poll_sleep); continue
         if host and pair_port:
             write_state(host, debug_port, pair_host, pair_port)
             key = f"{pair_host}:{pair_port}"
             if key != pair_notice_key or RETRY_FILE.exists():
                 RETRY_FILE.unlink(missing_ok=True); channel_serial += 1; channel = f"{PAIR_CHANNEL_PREFIX}-{int(time.time())}-{os.getpid()}-{channel_serial}"
                 if ensure_pair_channel(channel):
-                    remove_notification(STATUS_NOTIFICATION_ID)
+                    if status_notification_visible:
+                        remove_notification(STATUS_NOTIFICATION_ID)
                     notify(PAIR_NOTIFICATION_ID, "ADB pairing available", "Tap Enter PIN and enter the six-digit pairing PIN", "--channel", channel, "--priority", "high", "--vibrate", "100,200,100", "--button1", "Enter PIN", "--button1-action", action)
                     log(f"pairing notification posted host={pair_host} port={pair_port}"); pair_notice_key = key
+            last_state = "pairing"
             time.sleep(poll_sleep); continue
-        write_state(host, debug_port, "", ""); pair_notice_key = ""; remove_notification(PAIR_NOTIFICATION_ID)
+        write_state(host, debug_port, "", ""); pair_notice_key = ""
+        if last_state != "unpaired" and pair_notification_visible:
+            remove_notification(PAIR_NOTIFICATION_ID)
+        last_state = "unpaired"
         if now >= next_reminder:
             content = "Pair this device to reconnect ADB" if not (host and debug_port) else f"ADB debugging endpoint: {format_endpoint(host, debug_port)}. Pair this device to reconnect ADB"
             notify_status("Wireless debugging is not paired", content, "--priority", "default"); log("not-paired reminder posted"); next_reminder = now + 30
