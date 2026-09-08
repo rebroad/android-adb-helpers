@@ -47,15 +47,14 @@ ensure_status_channel() {
 }
 
 ensure_pair_channel() {
-  if command -v am >/dev/null 2>&1; then
-    am broadcast --user 0 -n com.termux.api/.TermuxApiReceiver \
-      --es api_method NotificationChannel \
+  if [ -x "${PREFIX}/libexec/termux-api" ]; then
+    "${PREFIX}/libexec/termux-api" NotificationChannel \
       --es id "${PAIR_CHANNEL_ID}" \
       --es name "ADB pairing PIN" \
       --es priority max >/dev/null 2>&1 ||
       log "notification channel setup failed: ${PAIR_CHANNEL_ID}"
   else
-    log "notification channel setup unavailable: am not found"
+    log "notification channel setup unavailable: termux-api client not found"
   fi
 }
 
