@@ -184,6 +184,7 @@ write_state "" "" "" ""
 action="/data/data/com.termux/files/usr/bin/bash ${SELF} --submit \"\$REPLY\""
 next_reminder=0
 pair_notice_key=""
+poll_sleep=9
 
 log "persistent monitor started"
 while :; do
@@ -212,6 +213,14 @@ while :; do
   [ -n "${discovered_host}" ] || discovered_host="${discovered_pair_host}"
   [ -n "${discovered_pair_host}" ] || discovered_pair_host="${discovered_host}"
 
+  # adb-mdns-discover waits one second for replies. Use a four-second sleep
+  # after a discovered debugging endpoint to make the complete poll cycle
+  # approximately five seconds; otherwise retain the ten-second cycle.
+  poll_sleep=9
+  if [ -n "${discovered_host}" ] && [ -n "${discovered_debug_port}" ]; then
+    poll_sleep=4
+  fi
+
   now="$(date +%s)"
   if input_active; then
     sleep 1
@@ -224,7 +233,7 @@ while :; do
     pair_notice_key=""
     rm -f "${RETRY_FILE}"
     write_state "${discovered_host}" "${discovered_debug_port}" "${discovered_pair_host}" "${discovered_pair_port}"
-    sleep 9
+    sleep "${poll_sleep}"
     continue
   fi
 
@@ -238,7 +247,7 @@ while :; do
       log "pairing notification posted host=${discovered_pair_host} port=${discovered_pair_port}"
       pair_notice_key="${current_pair_key}"
     fi
-    sleep 9
+    sleep "${poll_sleep}"
     continue
   fi
 
@@ -249,5 +258,5 @@ while :; do
     log "not-paired reminder posted"
     next_reminder=$((now + 30))
   fi
-  sleep 9
+  sleep "${poll_sleep}"
 done
