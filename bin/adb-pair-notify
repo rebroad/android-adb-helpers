@@ -93,6 +93,15 @@ probe_tcp_port() {
   log "tcp probe host=$host port=$port result=$result"
 }
 
+tcp_port_open() {
+  local host="$1" port="$2"
+  set +e
+  timeout 1 bash -c 'exec 3<>"/dev/tcp/$1/$2"' _ "${host}" "${port}" >/dev/null 2>&1
+  local status=$?
+  set -e
+  return "${status}"
+}
+
 submit() {
   local reply="$1" host debug_port pair_host pair_port pin output pair_endpoint debug_endpoint
   local input_marker="${INPUT_FILE}.new"
@@ -212,13 +221,25 @@ while :; do
   discovered_pair_host=""
   discovered_pair_port=""
 
-  connect_line="$(printf '%s\n' "${discovery}" | awk '$1 == "connect" {print; exit}')"
-  if [ -n "${connect_line}" ]; then
-    read -r _ discovered_host discovered_debug_port <<< "${connect_line}"
-    [[ "${discovered_debug_port}" =~ ^[0-9]{1,5}$ ]] || {
-      discovered_host=""
-      discovered_debug_port=""
-    }
+  connect_fallback_host=""
+  connect_fallback_port=""
+  while IFS=$'	' read -r _ candidate_host candidate_port; do
+    [[ "${candidate_port}" =~ ^[0-9]{1,5}$ ]] || continue
+    if [ -z "${connect_fallback_host}" ]; then
+      connect_fallback_host="${candidate_host}"
+      connect_fallback_port="${candidate_port}"
+    fi
+    if tcp_port_open "${candidate_host}" "${candidate_port}"; then
+      discovered_host="${candidate_host}"
+      discovered_debug_port="${candidate_port}"
+      log "debug endpoint selected host=${candidate_host} port=${candidate_port} (TCP listener reachable)"
+      break
+    fi
+  done <<< "$(printf '%s\n' "${discovery}" | awk '$1 == "connect" {print}')"
+  if [ -z "${discovered_debug_port}" ] && [ -n "${connect_fallback_host}" ]; then
+    discovered_host="${connect_fallback_host}"
+    discovered_debug_port="${connect_fallback_port}"
+    log "debug endpoint selected host=${discovered_host} port=${discovered_debug_port} (fallback; no TCP listener reachable)"
   fi
   pair_line="$(printf '%s\n' "${discovery}" | awk '$1 == "pairing" {print; exit}')"
   if [ -n "${pair_line}" ]; then
