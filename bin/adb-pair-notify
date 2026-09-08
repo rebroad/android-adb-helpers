@@ -272,7 +272,11 @@ while :; do
   write_state "${discovered_host}" "${discovered_debug_port}" "" ""
   pair_notice_key=""
   if [ "${now}" -ge "${next_reminder}" ]; then
-    notify "Wireless debugging is not paired" "Pair this device to reconnect ADB" --priority default
+    reminder_content="Pair this device to reconnect ADB"
+    if [ -n "${discovered_host}" ] && [ -n "${discovered_debug_port}" ]; then
+      reminder_content="ADB debugging endpoint: $(format_endpoint "${discovered_host}" "${discovered_debug_port}"). Pair this device to reconnect ADB"
+    fi
+    notify "Wireless debugging is not paired" "${reminder_content}" --priority default
     log "not-paired reminder posted"
     next_reminder=$((now + 30))
   fi
