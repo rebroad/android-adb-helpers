@@ -73,9 +73,15 @@ refreshed while the same pairing endpoint remains available, so opening its
 inline reply cannot be interrupted by the next poll. Pairing submissions are
 serialized, and each `adb pair` and `adb connect` attempt is logged with its exit status and output.
 After an unsuccessful connect, it also probes the debugging TCP port so the log
-can distinguish a missing listener from a TLS or ADB handshake failure. When Wireless Debugging is not paired, it displays a reminder including the
-discovered debugging endpoint when available; while the pairing screen is active, it displays the PIN-entry
-notification.
+can distinguish a missing listener from a TLS or ADB handshake failure. The quiet
+status reminders use a separate notification channel, leaving the shared Termux API
+channel available for the high-priority PIN prompt. If the PIN prompt is not shown
+as a pop-up, delete the old shared channel once with
+`termux-notification-channel -d termux-notification`, then enable Alert and Show as
+pop-up for the recreated Termux API channel in Android notification settings. When
+Wireless Debugging is not paired, it displays a reminder including the discovered
+debugging endpoint when available; while the pairing screen is active, it displays
+the PIN-entry notification.
 
 ## Other commands
 

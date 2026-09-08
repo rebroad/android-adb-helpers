@@ -12,6 +12,7 @@ RETRY_FILE="${STATE_DIR}/retry"
 SELF="${HOME}/bin/adb-pair-notify"
 MDNS="${HOME}/bin/adb-mdns-discover"
 NOTIFICATION_ID="adb-pair"
+STATUS_CHANNEL_ID="adb-pairing-status"
 
 mkdir -p "${STATE_DIR}"
 touch "${LOG_FILE}"
@@ -35,6 +36,18 @@ notify() {
   remove_notification
   termux-notification --id "${NOTIFICATION_ID}" --title "$1" --content "$2" "${@:3}" \
     >>"${LOG_FILE}" 2>&1 || log "notification failed: $1"
+}
+
+ensure_status_channel() {
+  if command -v termux-notification-channel >/dev/null 2>&1; then
+    termux-notification-channel "${STATUS_CHANNEL_ID}" "ADB pairing status" >/dev/null 2>&1 ||
+      log "notification channel setup failed: ${STATUS_CHANNEL_ID}"
+  fi
+}
+
+notify_status() {
+  ensure_status_channel
+  notify "$1" "$2" --channel "${STATUS_CHANNEL_ID}" --priority default "${@:3}"
 }
 
 write_state() {
@@ -119,17 +132,17 @@ submit() {
   read -r pin _ <<< "${reply}"
   [[ "${pin}" =~ ^[0-9]{6}$ ]] || {
     : > "${RETRY_FILE}"
-    notify "ADB pairing" "PIN must be exactly six digits"
+    notify_status "ADB pairing" "PIN must be exactly six digits"
     exit 2
   }
   [[ "${host}" != "" && "${debug_port}" =~ ^[0-9]{1,5}$ ]] || {
     : > "${RETRY_FILE}"
-    notify "ADB pairing" "ADB debugging endpoint is no longer available"
+    notify_status "ADB pairing" "ADB debugging endpoint is no longer available"
     exit 2
   }
   [[ "${pair_host}" != "" && "${pair_port}" =~ ^[0-9]{1,5}$ ]] || {
     : > "${RETRY_FILE}"
-    notify "ADB pairing" "Pairing service is no longer available"
+    notify_status "ADB pairing" "Pairing service is no longer available"
     exit 2
   }
 
@@ -143,7 +156,7 @@ submit() {
   log "adb pair finished pid=$$ status=${pair_status} output=${output@Q}"
   if [ "${pair_status}" -ne 0 ]; then
     : > "${RETRY_FILE}"
-    notify "ADB pairing failed" "${output:0:180}"
+    notify_status "ADB pairing failed" "${output:0:180}"
     exit 1
   fi
   connect_attempt=1
@@ -176,7 +189,7 @@ ${attempt_output}"
   if [ "${connect_succeeded}" -ne 0 ]; then
     : > "${RETRY_FILE}"
     log "adb connect failed after 3 attempts endpoint=${debug_endpoint}"
-    notify "ADB paired; connect failed" "${output:0:180}"
+    notify_status "ADB paired; connect failed" "${output:0:180}"
     exit 1
   fi
   log "adb success: ${output}"
@@ -296,7 +309,7 @@ while :; do
     if [ -n "${discovered_host}" ] && [ -n "${discovered_debug_port}" ]; then
       reminder_content="ADB debugging endpoint: $(format_endpoint "${discovered_host}" "${discovered_debug_port}"). Pair this device to reconnect ADB"
     fi
-    notify "Wireless debugging is not paired" "${reminder_content}" --priority default
+    notify_status "Wireless debugging is not paired" "${reminder_content}" --priority default
     log "not-paired reminder posted"
     next_reminder=$((now + 30))
   fi
