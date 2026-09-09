@@ -16,7 +16,7 @@ from pathlib import Path
 HOME = os.environ.get("HOME", str(Path.home()))
 PREFIX = os.environ.get("PREFIX", "/data/data/com.termux/files/usr")
 TERMUX_MODE = Path("/data/data/com.termux/files/usr").is_dir()
-DESKTOP_MODE = "--xfce" in sys.argv or (not TERMUX_MODE and bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")))
+DESKTOP_MODE = not TERMUX_MODE and bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
 STATE_DIR = Path(os.environ.get("ADB_PAIR_NOTIFY_STATE_DIR", Path(HOME) / ".cache/adb-pair-notify"))
 LOG_FILE = STATE_DIR / "attempt.log"
 STATE_FILE = STATE_DIR / "state"
@@ -381,10 +381,8 @@ def daemon():
 
 if __name__ == "__main__":
     if len(sys.argv) == 3 and sys.argv[1] == "--submit": raise SystemExit(submit(sys.argv[2]))
-    if DESKTOP_MODE:
-        sys.argv.remove("--xfce")
     if len(sys.argv) == 2 and sys.argv[1] == "--daemon":
         log_fd = os.open(LOG_FILE, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
         os.dup2(log_fd, 1); os.dup2(log_fd, 2); os.close(log_fd)
-    elif len(sys.argv) != 1: raise SystemExit("usage: adb-pair-notify [--daemon] [--xfce]")
+    elif len(sys.argv) != 1: raise SystemExit("usage: adb-pair-notify [--daemon]")
     daemon()

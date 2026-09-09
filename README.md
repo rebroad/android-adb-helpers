@@ -69,7 +69,7 @@ done
 The monitor retries transient discovery, pairing, and connection failures and
 logs attempts in `~/.cache/adb-pair-notify/attempt.log`. On Linux, desktop mode
 is selected automatically when an active `DISPLAY` or `WAYLAND_DISPLAY` is
-present; `--xfce` is available as an explicit override.
+present.
 
 ## Other commands
 
