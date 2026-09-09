@@ -1,8 +1,9 @@
-#!/data/data/com.termux/files/usr/bin/python
+#!/usr/bin/env python3
 """Persistent Android wireless-debugging pairing monitor."""
 import fcntl
 import os
 import re
+import shlex
 import shutil
 import signal
 import socket
@@ -12,16 +13,18 @@ import sys
 import time
 from pathlib import Path
 
-HOME = os.environ.get("HOME", "/data/data/com.termux/files/home")
+HOME = os.environ.get("HOME", str(Path.home()))
 PREFIX = os.environ.get("PREFIX", "/data/data/com.termux/files/usr")
-STATE_DIR = Path(HOME) / ".cache/adb-pair-notify"
+TERMUX_MODE = Path("/data/data/com.termux/files/usr").is_dir()
+DESKTOP_MODE = "--xfce" in sys.argv or (not TERMUX_MODE and bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")))
+STATE_DIR = Path(os.environ.get("ADB_PAIR_NOTIFY_STATE_DIR", Path(HOME) / ".cache/adb-pair-notify"))
 LOG_FILE = STATE_DIR / "attempt.log"
 STATE_FILE = STATE_DIR / "state"
 LOCK_FILE = STATE_DIR / "monitor.pid"
 INPUT_FILE = STATE_DIR / "input.pid"
 SUBMIT_LOCK = STATE_DIR / "submit.lock"
 RETRY_FILE = STATE_DIR / "retry"
-SELF = Path(HOME) / "bin/adb-pair-notify"
+SELF = Path(__file__).resolve()
 PAIR_NOTIFICATION_ID = "adb-pair"
 STATUS_NOTIFICATION_ID = "adb-pair-status"
 STATUS_CHANNEL_ID = "adb-pairing-status"
@@ -64,11 +67,13 @@ def remove_notification(notification_id):
 
 def notify(notification_id, title, content, *extra):
     global pair_notification_visible, status_notification_visible
-    command = shutil.which("termux-notification")
+    backend = "notify-send" if DESKTOP_MODE else "termux-notification"
+    command = shutil.which(backend)
     if not command:
-        log("notification failed: termux-notification unavailable")
+        log(f"notification failed: {backend} unavailable")
         return
-    result = subprocess.run([command, "--id", notification_id, "--title", title, "--content", content, *extra],
+    args = [command, title, content] if DESKTOP_MODE else [command, "--id", notification_id, "--title", title, "--content", content, *extra]
+    result = subprocess.run(args,
                             text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False)
     if result.returncode:
         log(f"notification failed: {title}: {result.stdout.strip()}")
@@ -98,8 +103,34 @@ def ensure_pair_channel(channel_id):
 
 
 def notify_status(title, content, *extra):
+    if DESKTOP_MODE:
+        notify(STATUS_NOTIFICATION_ID, title, content)
+        return
     ensure_status_channel()
     notify(STATUS_NOTIFICATION_ID, title, content, "--channel", STATUS_CHANNEL_ID, "--priority", "default", *extra)
+
+
+def xfce_prompt(pair_host, pair_port):
+    """Ask for the PIN shown by Android Wireless Debugging."""
+    command = shutil.which("zenity") or shutil.which("yad")
+    if not command:
+        log("XFCE pairing prompt unavailable: install zenity or yad")
+        notify_status("ADB pairing", "Install zenity or yad to enter the pairing PIN")
+        return ""
+    if Path(command).name == "yad":
+        args = [command, "--entry", "--title=ADB pairing available",
+                "--text=Enter the six-digit pairing PIN shown on the phone.",
+                "--button=Pair:0", "--button=Cancel:1", "--width=420"]
+    else:
+        args = [command, "--entry", "--title=ADB pairing available",
+                "--text=Enter the six-digit pairing PIN shown on the phone.",
+                "--ok-label=Pair", "--cancel-label=Cancel", "--width=420"]
+    log(f"XFCE pairing dialog shown host={pair_host} port={pair_port}")
+    result = subprocess.run(args, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False)
+    if result.returncode:
+        log("XFCE pairing dialog cancelled")
+        return ""
+    return result.stdout.strip()
 
 
 def write_state(host, debug_port, pair_host, pair_port):
@@ -293,7 +324,7 @@ def daemon():
     def stop(_sig, _frame):
         LOCK_FILE.unlink(missing_ok=True); INPUT_FILE.unlink(missing_ok=True); sys.exit(143)
     signal.signal(signal.SIGINT, stop); signal.signal(signal.SIGTERM, stop)
-    action = f'/data/data/com.termux/files/usr/bin/bash {SELF} --submit "$REPLY"'
+    action = f'{shlex.quote(sys.executable)} {shlex.quote(str(SELF))} --submit "$REPLY"'
     log("persistent monitor started")
     while True:
         discovery = discover(1)
@@ -319,6 +350,16 @@ def daemon():
         if host and pair_port:
             write_state(host, debug_port, pair_host, pair_port)
             key = f"{pair_host}:{pair_port}"
+            if DESKTOP_MODE:
+                if key != pair_notice_key or RETRY_FILE.exists():
+                    RETRY_FILE.unlink(missing_ok=True)
+                    pair_notice_key = key
+                    reply = xfce_prompt(pair_host, pair_port)
+                    if reply:
+                        submit(reply)
+                last_state = "pairing"
+                time.sleep(poll_sleep)
+                continue
             if key != pair_notice_key or RETRY_FILE.exists():
                 RETRY_FILE.unlink(missing_ok=True); channel_serial += 1; channel = f"{PAIR_CHANNEL_PREFIX}-{int(time.time())}-{os.getpid()}-{channel_serial}"
                 if ensure_pair_channel(channel):
@@ -340,8 +381,10 @@ def daemon():
 
 if __name__ == "__main__":
     if len(sys.argv) == 3 and sys.argv[1] == "--submit": raise SystemExit(submit(sys.argv[2]))
+    if DESKTOP_MODE:
+        sys.argv.remove("--xfce")
     if len(sys.argv) == 2 and sys.argv[1] == "--daemon":
         log_fd = os.open(LOG_FILE, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
         os.dup2(log_fd, 1); os.dup2(log_fd, 2); os.close(log_fd)
-    elif len(sys.argv) != 1: raise SystemExit("usage: adb-pair-notify [--daemon]")
+    elif len(sys.argv) != 1: raise SystemExit("usage: adb-pair-notify [--daemon] [--xfce]")
     daemon()

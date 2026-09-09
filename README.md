@@ -4,31 +4,30 @@ Small Termux helpers for using Android Wireless Debugging over ADB.
 
 ## Prerequisites
 
-- A recent [Termux](https://github.com/termux/termux-app) installation.
-- ADB installed in Termux:
+Choose the runtime:
+
+- Termux: a recent [Termux](https://github.com/termux/termux-app) installation,
+  ADB, and Termux:API:
 
   ```sh
   pkg update
-  pkg install android-tools
+  pkg install android-tools termux-api
   ```
 
-- [Termux:API](https://github.com/termux/termux-api) installed as an Android
-  app, plus the Termux package that provides its commands:
+- XFCE4 Linux: host ADB, a dialog provider, and desktop notifications:
 
   ```sh
-  pkg install termux-api
+  sudo apt install adb zenity libnotify-bin
   ```
 
-- Android notification permission enabled for Termux:API. The notification
-  permission is required by `adb-pair-notify` to display the PIN-entry action.
-  In Samsung notification settings, set the Termux:API notification category used
-  by pairing prompts to Alert and enable Show as pop-up. This is required for
-  the PIN action to appear as a heads-up banner over the pairing screen.
-- Android Wireless Debugging enabled in Developer options. The phone and the
-  computer or Termux network interface must be on the same local network.
-- On Samsung devices, set Termux and Termux:API to **Unrestricted** battery
-  usage, and disable any additional sleeping/deep-sleep restrictions for them.
-  Otherwise Android may stop the notification helper while it is monitoring.
+- For Termux, install the [Termux:API](https://github.com/termux/termux-api)
+  Android app as well. Android notification permission is required for its
+  PIN-entry action; on Samsung, set its pairing category to Alert with Show as
+  pop-up enabled.
+
+- Common: enable Android Wireless Debugging and keep the phone and runtime on
+  the same local network. On Samsung, set Termux and Termux:API to
+  **Unrestricted** battery usage when using the Termux runtime.
 
 Python 3 and Bash are included by standard Termux installations. The helpers
 use only the Python standard library.
@@ -55,7 +54,7 @@ done
 ## Wireless pairing
 
 1. Enable **Wireless debugging**.
-2. Start `adb-pair-notify` in Termux:
+2. Start the monitor in the selected runtime:
 
    ```sh
    adb-pair-notify
@@ -63,19 +62,14 @@ done
 
    It continues monitoring until stopped.
 3. Open Android's **Pair device with pairing code** screen.
-4. Tap the notification's **Enter PIN** action and enter the displayed
-   pairing PIN. The helper discovers the pairing port through mDNS, performs
-   `adb pair`, and then connects to the debugging endpoint.
+4. Enter the displayed PIN in the Android notification action (Termux) or
+   `zenity` dialog (XFCE4). The helper discovers both mDNS endpoints, runs
+   `adb pair`, and connects to the debugging endpoint.
 
-The helper polls mDNS approximately every five seconds while a debugging endpoint is advertised, and every ten seconds otherwise. Pairing prompts and quiet status reminders use separate notification IDs, so a status reminder cannot replace a PIN prompt. Every PIN prompt is created on a new high-priority Android notification channel; if that channel cannot be created, the prompt is not posted. The PIN notification is not refreshed while the same pairing endpoint remains available, so opening its inline reply cannot be interrupted by the next poll. Pairing submissions are serialized, and each `adb pair` and `adb connect` attempt is logged with its exit status and output.
-After an unsuccessful connect, it also probes the debugging TCP port so the log
-can distinguish a missing listener from a TLS or ADB handshake failure. Quiet status
-reminders use a separate channel; each PIN prompt uses a fresh high-priority
-channel. Android notification permission and the Termux:API category setting must
-still allow Alert and Show as pop-up.
-When Wireless Debugging is not paired, it displays a reminder including the discovered
-debugging endpoint when available; while the pairing screen is active, it displays
-the PIN-entry notification.
+The monitor retries transient discovery, pairing, and connection failures and
+logs attempts in `~/.cache/adb-pair-notify/attempt.log`. On Linux, desktop mode
+is selected automatically when an active `DISPLAY` or `WAYLAND_DISPLAY` is
+present; `--xfce` is available as an explicit override.
 
 ## Other commands
 
