@@ -1,4 +1,4 @@
-#!/data/data/com.termux/files/usr/bin/python
+#!/usr/bin/env python3
 """Discover Android Wireless Debugging ADB services via mDNS."""
 
 import socket
