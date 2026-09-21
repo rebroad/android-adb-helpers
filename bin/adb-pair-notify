@@ -245,6 +245,8 @@ def interface_addresses(sock):
 
 
 def discover(seconds=1):
+    if not TERMUX_MODE and shutil.which("avahi-browse"):
+        return avahi_discover(seconds)
     query = b"".join(encode_name(name) + struct.pack("!HH", 12, 1) for name in SERVICES)
     packet = struct.pack("!HHHHHH", 0, 0, len(SERVICES), 0, 0, 0) + query
     found = {}
@@ -275,6 +277,34 @@ def discover(seconds=1):
         sock.close()
     except OSError as e:
         log(f"mDNS discovery failed: {e}")
+    return sorted(found)
+
+
+def avahi_discover(seconds=1):
+    found = {}
+    # avahi-browse needs a little longer than the monitor's one-second poll
+    # to receive and resolve the PTR/SRV/A records.
+    timeout = max(3, int(seconds))
+    for service_name, kind in SERVICES.items():
+        service = service_name.removesuffix(".local")
+        try:
+            result = subprocess.run(
+                ["avahi-browse", "-rt", "-p", service],
+                text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                timeout=timeout, check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        for line in result.stdout.splitlines():
+            fields = line.split(";")
+            if len(fields) < 9 or fields[0] != "=" or fields[4] != service:
+                continue
+            try:
+                port = int(fields[8])
+            except ValueError:
+                continue
+            if fields[7]:
+                found[(kind, fields[7], port)] = True
     return sorted(found)
 
 
