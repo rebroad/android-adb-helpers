@@ -1,0 +1,12 @@
+[Unit]
+Description=Android Wireless Debugging pairing notifier
+After=graphical-session.target network-online.target
+
+[Service]
+Type=simple
+ExecStart=/mnt/kingston/@home/rebroad/src/android-adb-helpers/bin/adb-pair-notify --daemon
+Restart=always
+RestartSec=5s
+
+[Install]
+WantedBy=default.target
