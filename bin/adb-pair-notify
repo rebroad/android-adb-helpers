@@ -287,15 +287,19 @@ def avahi_discover(seconds=1):
     timeout = max(3, int(seconds))
     for service_name, kind in SERVICES.items():
         service = service_name.removesuffix(".local")
+        process = None
         try:
-            result = subprocess.run(
+            process = subprocess.Popen(
                 ["avahi-browse", "-rt", "-p", service],
                 text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                timeout=timeout, check=False,
             )
-        except (OSError, subprocess.TimeoutExpired):
+            output, _ = process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            output, _ = process.communicate()
+        except OSError:
             continue
-        for line in result.stdout.splitlines():
+        for line in output.splitlines():
             fields = line.split(";")
             if len(fields) < 9 or fields[0] != "=" or fields[4] != service:
                 continue
