@@ -402,6 +402,10 @@ def daemon():
         poll_sleep = 4 if host and debug_port else 9
         now = int(time.time())
         if input_active(): time.sleep(1); continue
+        if host and debug_port and not adb_connected(host, debug_port):
+            output = run(["adb", "connect", format_endpoint(host, debug_port)], timeout=8)
+            if adb_connected(host, debug_port):
+                log(f"automatic ADB reconnect endpoint={format_endpoint(host, debug_port)} output={output!r}")
         if host and debug_port and adb_connected(host, debug_port):
             if last_state != "connected":
                 if pair_notification_visible:
