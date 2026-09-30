@@ -1,3 +1,10 @@
 #!/data/data/com.termux/files/usr/bin/sh
 
-exec "$HOME/src/android-adb-helpers/bin/adb-pair-notify" --daemon
+helper="$HOME/src/android-adb-helpers/bin/adb-pair-notify"
+log="$HOME/.cache/adb-pair-notify/runner.log"
+mkdir -p "${log%/*}"
+printf '%s starting %s --daemon\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$helper" >>"$log"
+"$helper" --daemon >>"$log" 2>&1
+status=$?
+printf '%s exited status=%s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$status" >>"$log"
+exit "$status"
