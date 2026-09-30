@@ -71,7 +71,9 @@ done
 The monitor retries transient discovery, pairing, and connection failures and
 logs attempts in `~/.cache/adb-pair-notify/attempt.log`. On Linux, desktop mode
 is selected automatically when an active `DISPLAY` or `WAYLAND_DISPLAY` is
-present.
+present. The Linux systemd unit can list alternate device addresses in
+`ADB_PAIR_NOTIFY_FALLBACK_HOSTS`; for each advertised port it uses an alternate
+only when that TCP endpoint accepts connections there.
 
 ## Other commands
 

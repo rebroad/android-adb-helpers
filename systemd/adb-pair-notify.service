@@ -8,6 +8,7 @@ ExecStart=/mnt/kingston/@home/rebroad/src/android-adb-helpers/bin/adb-pair-notif
 Environment=DISPLAY=:0.0
 Environment=XAUTHORITY=%h/.Xauthority
 Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%U/bus
+Environment=ADB_PAIR_NOTIFY_FALLBACK_HOSTS=192.168.192.6,192.168.192.7
 Restart=always
 RestartSec=5s
 

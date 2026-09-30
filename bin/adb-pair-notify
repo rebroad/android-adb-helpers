@@ -29,6 +29,9 @@ PAIR_NOTIFICATION_ID = "adb-pair"
 STATUS_NOTIFICATION_ID = "adb-pair-status"
 STATUS_CHANNEL_ID = "adb-pairing-status"
 PAIR_CHANNEL_PREFIX = "adb-pairing-pin"
+FALLBACK_HOSTS = [host.strip() for host in os.environ.get(
+    "ADB_PAIR_NOTIFY_FALLBACK_HOSTS", ""
+).split(",") if host.strip()]
 pair_notification_visible = False
 status_notification_visible = False
 SERVICES = {"_adb-tls-pairing._tcp.local": "pairing", "_adb-tls-connect._tcp.local": "connect"}
@@ -172,6 +175,17 @@ def tcp_open(host, port, timeout=1):
             return True
     except OSError:
         return False
+
+
+def reachable_host(host, port):
+    """Prefer the advertised address, then a configured alternate route."""
+    if tcp_open(host, port):
+        return host
+    for candidate in FALLBACK_HOSTS:
+        if candidate != host and tcp_open(candidate, port):
+            log(f"using alternate route for ADB endpoint advertised_host={host} endpoint={format_endpoint(candidate, port)}")
+            return candidate
+    return host
 
 
 def adb_connected(host, port):
@@ -372,9 +386,12 @@ def daemon():
         host = debug_port = pair_host = pair_port = ""
         fallback = connects[0] if connects else None
         for candidate_host, candidate_port in connects:
+            candidate_host = reachable_host(candidate_host, candidate_port)
             if tcp_open(candidate_host, candidate_port): host, debug_port = candidate_host, str(candidate_port); break
         if not debug_port and fallback: host, debug_port = fallback[0], str(fallback[1])
-        if pairings: pair_host, pair_port = pairings[0][0], str(pairings[0][1])
+        if pairings:
+            pair_host = reachable_host(pairings[0][0], pairings[0][1])
+            pair_port = str(pairings[0][1])
         host = host or pair_host; pair_host = pair_host or host
         poll_sleep = 4 if host and debug_port else 9
         now = int(time.time())
