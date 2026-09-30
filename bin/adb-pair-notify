@@ -177,11 +177,9 @@ def tcp_open(host, port, timeout=1):
         return False
 
 
-def reachable_host(host, port):
+def reachable_host(host, port, prefer_loopback=False):
     """Prefer the advertised address, then a configured alternate route."""
-    if TERMUX_MODE and tcp_open("127.0.0.1", port):
-        if host != "127.0.0.1":
-            log(f"using local ADB endpoint advertised_host={host} endpoint={format_endpoint('127.0.0.1', port)}")
+    if prefer_loopback and TERMUX_MODE and tcp_open("127.0.0.1", port):
         return "127.0.0.1"
     if tcp_open(host, port):
         return host
@@ -390,10 +388,10 @@ def daemon():
         host = debug_port = pair_host = pair_port = ""
         fallback = connects[0] if connects else None
         for candidate_host, candidate_port in connects:
-            candidate_host = reachable_host(candidate_host, candidate_port)
+            candidate_host = reachable_host(candidate_host, candidate_port, prefer_loopback=True)
             if tcp_open(candidate_host, candidate_port): host, debug_port = candidate_host, str(candidate_port); break
         if not debug_port and fallback:
-            fallback_host = reachable_host(fallback[0], fallback[1])
+            fallback_host = reachable_host(fallback[0], fallback[1], prefer_loopback=True)
             host, debug_port = fallback_host, str(fallback[1])
         if pairings:
             pair_host = reachable_host(pairings[0][0], pairings[0][1])

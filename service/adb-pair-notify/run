@@ -5,7 +5,4 @@ python="$PREFIX/bin/python"
 log="$HOME/.cache/adb-pair-notify/runner.log"
 mkdir -p "${log%/*}"
 printf '%s starting %s %s --daemon\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$python" "$helper" >>"$log"
-"$python" "$helper" --daemon >>"$log" 2>&1
-status=$?
-printf '%s exited status=%s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$status" >>"$log"
-exit "$status"
+exec "$python" "$helper" --daemon >>"$log" 2>&1
