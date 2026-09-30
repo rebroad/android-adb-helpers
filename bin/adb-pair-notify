@@ -110,20 +110,25 @@ def notify_status(title, content, *extra):
     notify(STATUS_NOTIFICATION_ID, title, content, "--channel", STATUS_CHANNEL_ID, "--priority", "default", *extra)
 
 
-def xfce_prompt(pair_host, pair_port):
+def xfce_prompt(pair_host, pair_port, debug_host="", debug_port=""):
     """Ask for the PIN shown by Android Wireless Debugging."""
     command = shutil.which("zenity") or shutil.which("yad")
     if not command:
         log("XFCE pairing prompt unavailable: install zenity or yad")
         notify_status("ADB pairing", "Install zenity or yad to enter the pairing PIN")
         return ""
+    pairing_endpoint = format_endpoint(pair_host, pair_port)
+    debug_endpoint = format_endpoint(debug_host, debug_port) if debug_host and debug_port else "not currently advertised"
+    prompt = (f"Pairing endpoint: {pairing_endpoint}\n"
+              f"Debug endpoint: {debug_endpoint}\n\n"
+              "Enter the six-digit pairing PIN shown on that phone.")
     if Path(command).name == "yad":
         args = [command, "--entry", "--title=ADB pairing available",
-                "--text=Enter the six-digit pairing PIN shown on the phone.",
+                f"--text={prompt}",
                 "--button=Pair:0", "--button=Cancel:1", "--width=420"]
     else:
         args = [command, "--entry", "--title=ADB pairing available",
-                "--text=Enter the six-digit pairing PIN shown on the phone.",
+                f"--text={prompt}",
                 "--ok-label=Pair", "--cancel-label=Cancel", "--width=420"]
     log(f"XFCE pairing dialog shown host={pair_host} port={pair_port}")
     result = subprocess.run(args, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False)
@@ -395,7 +400,7 @@ def daemon():
                 if key != pair_notice_key or RETRY_FILE.exists():
                     RETRY_FILE.unlink(missing_ok=True)
                     pair_notice_key = key
-                    reply = xfce_prompt(pair_host, pair_port)
+                    reply = xfce_prompt(pair_host, pair_port, host, debug_port)
                     if reply:
                         submit(reply)
                 last_state = "pairing"

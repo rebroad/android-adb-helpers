@@ -64,7 +64,9 @@ done
 3. Open Android's **Pair device with pairing code** screen.
 4. Enter the displayed PIN in the Android notification action (Termux) or
    `zenity` dialog (XFCE4). The helper discovers both mDNS endpoints, runs
-   `adb pair`, and connects to the debugging endpoint.
+   `adb pair`, and connects to the debugging endpoint. The desktop dialog
+   identifies the exact pairing and debugging `IP:port` endpoints before you
+   enter the PIN.
 
 The monitor retries transient discovery, pairing, and connection failures and
 logs attempts in `~/.cache/adb-pair-notify/attempt.log`. On Linux, desktop mode
