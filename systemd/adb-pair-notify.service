@@ -5,6 +5,9 @@ After=graphical-session.target network-online.target
 [Service]
 Type=simple
 ExecStart=/mnt/kingston/@home/rebroad/src/android-adb-helpers/bin/adb-pair-notify --daemon
+Environment=DISPLAY=:0.0
+Environment=XAUTHORITY=%h/.Xauthority
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%U/bus
 Restart=always
 RestartSec=5s
 
