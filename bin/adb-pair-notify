@@ -387,13 +387,6 @@ def daemon():
                     remove_notification(STATUS_NOTIFICATION_ID)
             pair_notice_key = ""; RETRY_FILE.unlink(missing_ok=True); write_state(host, debug_port, pair_host, pair_port); last_state = "connected"; time.sleep(poll_sleep); continue
         if host and pair_port:
-            if not tcp_open(pair_host, pair_port):
-                log(f"pairing endpoint unavailable; ignoring stale mDNS result endpoint={format_endpoint(pair_host, pair_port)}")
-                write_state("", "", "", "")
-                pair_notice_key = ""
-                last_state = "unpaired"
-                time.sleep(4)
-                continue
             write_state(host, debug_port, pair_host, pair_port)
             key = f"{pair_host}:{pair_port}"
             if DESKTOP_MODE:
