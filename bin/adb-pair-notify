@@ -374,7 +374,7 @@ def daemon():
             os.kill(old, 0); raise SystemExit(f"monitor already running (pid {old})")
         except (OSError, ValueError): pass
     LOCK_FILE.write_text(f"{os.getpid()}\n"); write_state("", "", "", "")
-    pair_notice_key, channel_serial, next_reminder = "", 0, 0
+    pair_notice_key, channel_serial = "", 0
     last_state = "unknown"
     def stop(_sig, _frame):
         LOCK_FILE.unlink(missing_ok=True); INPUT_FILE.unlink(missing_ok=True); sys.exit(143)
@@ -398,7 +398,6 @@ def daemon():
             pair_port = str(pairings[0][1])
         host = host or pair_host; pair_host = pair_host or host
         poll_sleep = 4 if host and debug_port else 9
-        now = int(time.time())
         if input_active(): time.sleep(1); continue
         if host and debug_port and not adb_connected(host, debug_port):
             output = run(["adb", "connect", format_endpoint(host, debug_port)], timeout=8)
@@ -437,9 +436,6 @@ def daemon():
         if last_state != "unpaired" and pair_notification_visible:
             remove_notification(PAIR_NOTIFICATION_ID)
         last_state = "unpaired"
-        if now >= next_reminder:
-            content = "Pair this device to reconnect ADB" if not (host and debug_port) else f"ADB debugging endpoint: {format_endpoint(host, debug_port)}. Pair this device to reconnect ADB"
-            notify_status("Wireless debugging is not paired", content, "--priority", "default"); log("not-paired reminder posted"); next_reminder = now + 30
         time.sleep(poll_sleep)
 
 
