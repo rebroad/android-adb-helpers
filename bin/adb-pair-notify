@@ -190,10 +190,22 @@ def reachable_host(host, port, prefer_loopback=False):
     return host
 
 
-def adb_connected(host, port):
+def adb_connection_state(host, port):
     endpoint = format_endpoint(host, port)
     output = run(["adb", "devices"], timeout=10)
-    return any(line.split()[:2] == [endpoint, "device"] for line in output.splitlines())
+    listed = any(line.split()[:2] == [endpoint, "device"] for line in output.splitlines())
+    if not listed:
+        return False, False
+
+    # ADB can keep reporting a stale transport as "device" after the phone
+    # has dropped its TLS connection. Verify a real round-trip before using
+    # it to suppress the pairing prompt.
+    probe = run(["adb", "-s", endpoint, "shell", "printf", "ADB_PAIR_NOTIFY_LIVE"], timeout=5)
+    return True, probe == "ADB_PAIR_NOTIFY_LIVE"
+
+
+def pairing_required(output, endpoint):
+    return f"failed to authenticate to {endpoint}" in output.lower()
 
 
 def encode_name(name):
@@ -399,18 +411,34 @@ def daemon():
         host = host or pair_host; pair_host = pair_host or host
         poll_sleep = 4 if host and debug_port else 9
         if input_active(): time.sleep(1); continue
-        if host and debug_port and not adb_connected(host, debug_port):
-            output = run(["adb", "connect", format_endpoint(host, debug_port)], timeout=8)
-            if adb_connected(host, debug_port):
-                log(f"automatic ADB reconnect endpoint={format_endpoint(host, debug_port)} output={output!r}")
-        if host and debug_port and adb_connected(host, debug_port):
+        pairing_needed = False
+        connected = False
+        if host and debug_port:
+            endpoint = format_endpoint(host, debug_port)
+            listed, connected = adb_connection_state(host, debug_port)
+            if listed and not connected:
+                output = run(["adb", "disconnect", endpoint], timeout=8)
+                log(f"removed stale ADB transport endpoint={endpoint} output={output!r}")
+            if not connected:
+                output = run(["adb", "connect", endpoint], timeout=8)
+                pairing_needed = pairing_required(output, endpoint)
+                _, connected = adb_connection_state(host, debug_port)
+                if connected:
+                    log(f"automatic ADB reconnect endpoint={endpoint} output={output!r}")
+                elif pairing_needed:
+                    log(f"ADB reports pairing required endpoint={endpoint} output={output!r}")
+            else:
+                pairing_needed = False
+        else:
+            pairing_needed = False
+        if connected:
             if last_state != "connected":
                 if pair_notification_visible:
                     remove_notification(PAIR_NOTIFICATION_ID)
                 if status_notification_visible:
                     remove_notification(STATUS_NOTIFICATION_ID)
             pair_notice_key = ""; RETRY_FILE.unlink(missing_ok=True); write_state(host, debug_port, pair_host, pair_port); last_state = "connected"; time.sleep(poll_sleep); continue
-        if host and pair_port:
+        if host and pair_port and pairing_needed:
             write_state(host, debug_port, pair_host, pair_port)
             key = f"{pair_host}:{pair_port}"
             if DESKTOP_MODE:
