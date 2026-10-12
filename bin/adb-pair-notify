@@ -422,18 +422,6 @@ def daemon():
     log("persistent monitor started")
     while True:
         usb_endpoint = adb_usb_connection()
-        if usb_endpoint:
-            if last_state != "connected":
-                log(f"healthy USB ADB transport endpoint={usb_endpoint}")
-                if pair_notification_visible:
-                    remove_notification(PAIR_NOTIFICATION_ID)
-                if status_notification_visible:
-                    remove_notification(STATUS_NOTIFICATION_ID)
-            write_state("", "", "", "")
-            pair_notice_key = ""; RETRY_FILE.unlink(missing_ok=True); last_state = "connected"
-            time.sleep(9)
-            continue
-
         discovery = discover(1)
         connects = [(h, p) for kind, h, p in discovery if kind == "connect"]
         pairings = [(h, p) for kind, h, p in discovery if kind == "pairing"]
@@ -473,6 +461,10 @@ def daemon():
                 pairing_needed = False
         else:
             pairing_needed = False
+        if not connected and usb_endpoint:
+            if last_state != "connected":
+                log(f"healthy USB ADB transport endpoint={usb_endpoint}")
+            connected = True
         if connected:
             if last_state != "connected":
                 if pair_notification_visible:
