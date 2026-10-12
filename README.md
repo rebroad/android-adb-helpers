@@ -69,11 +69,13 @@ done
    enter the PIN.
 
 The monitor retries transient discovery, pairing, and connection failures and
-logs attempts in `~/.cache/adb-pair-notify/attempt.log`. On Linux, desktop mode
-is selected automatically when an active `DISPLAY` or `WAYLAND_DISPLAY` is
-present. The Linux systemd unit can list alternate device addresses in
-`ADB_PAIR_NOTIFY_FALLBACK_HOSTS`; for each advertised port it uses an alternate
-only when that TCP endpoint accepts connections there.
+logs attempts in `~/.cache/adb-pair-notify/attempt.log`. It recognizes an
+already healthy USB ADB transport and can also try configured direct TCP ADB
+endpoints when mDNS is unavailable. On Linux, desktop mode is selected
+automatically when an active `DISPLAY` or `WAYLAND_DISPLAY` is present. The
+systemd unit sets `ADB_PAIR_NOTIFY_FALLBACK_HOSTS` for alternate mDNS routes
+and direct endpoint checks, `ADB_PAIR_NOTIFY_DIRECT_PORT` for the TCP ADB port,
+and `ADB_PAIR_NOTIFY_DEVICE_MODELS` to identify the intended phones.
 
 ## Other commands
 

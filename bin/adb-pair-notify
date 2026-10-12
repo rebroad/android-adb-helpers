@@ -32,6 +32,10 @@ PAIR_CHANNEL_PREFIX = "adb-pairing-pin"
 FALLBACK_HOSTS = [host.strip() for host in os.environ.get(
     "ADB_PAIR_NOTIFY_FALLBACK_HOSTS", ""
 ).split(",") if host.strip()]
+DIRECT_PORT = int(os.environ.get("ADB_PAIR_NOTIFY_DIRECT_PORT", "5555"))
+DEVICE_MODELS = {model.strip().replace("_", "-") for model in os.environ.get(
+    "ADB_PAIR_NOTIFY_DEVICE_MODELS", ""
+).split(",") if model.strip()}
 pair_notification_visible = False
 status_notification_visible = False
 SERVICES = {"_adb-tls-pairing._tcp.local": "pairing", "_adb-tls-connect._tcp.local": "connect"}
@@ -201,7 +205,30 @@ def adb_connection_state(host, port):
     # has dropped its TLS connection. Verify a real round-trip before using
     # it to suppress the pairing prompt.
     probe = run(["adb", "-s", endpoint, "shell", "printf", "ADB_PAIR_NOTIFY_LIVE"], timeout=5)
-    return True, probe == "ADB_PAIR_NOTIFY_LIVE"
+    if probe != "ADB_PAIR_NOTIFY_LIVE":
+        return True, False
+    if DEVICE_MODELS:
+        model = run(["adb", "-s", endpoint, "shell", "getprop", "ro.product.model"], timeout=5).replace("_", "-")
+        if model not in DEVICE_MODELS:
+            return True, False
+    return True, True
+
+
+def adb_usb_connection():
+    """Return a healthy USB transport for the configured phone, if present."""
+    output = run(["adb", "devices", "-l"], timeout=10)
+    for line in output.splitlines()[1:]:
+        fields = line.split()
+        if len(fields) < 2 or fields[1] != "device" or ":" in fields[0]:
+            continue
+        properties = dict(field.split(":", 1) for field in fields[2:] if ":" in field)
+        if DEVICE_MODELS and properties.get("model", "").replace("_", "-") not in DEVICE_MODELS:
+            continue
+        endpoint = fields[0]
+        probe = run(["adb", "-s", endpoint, "shell", "printf", "ADB_PAIR_NOTIFY_LIVE"], timeout=5)
+        if probe == "ADB_PAIR_NOTIFY_LIVE":
+            return endpoint
+    return ""
 
 
 def pairing_required(output, endpoint):
@@ -394,9 +421,24 @@ def daemon():
     action = f'{shlex.quote(sys.executable)} {shlex.quote(str(SELF))} --submit "$REPLY"'
     log("persistent monitor started")
     while True:
+        usb_endpoint = adb_usb_connection()
+        if usb_endpoint:
+            if last_state != "connected":
+                log(f"healthy USB ADB transport endpoint={usb_endpoint}")
+                if pair_notification_visible:
+                    remove_notification(PAIR_NOTIFICATION_ID)
+                if status_notification_visible:
+                    remove_notification(STATUS_NOTIFICATION_ID)
+            write_state("", "", "", "")
+            pair_notice_key = ""; RETRY_FILE.unlink(missing_ok=True); last_state = "connected"
+            time.sleep(9)
+            continue
+
         discovery = discover(1)
         connects = [(h, p) for kind, h, p in discovery if kind == "connect"]
         pairings = [(h, p) for kind, h, p in discovery if kind == "pairing"]
+        connects.extend((host, DIRECT_PORT) for host in FALLBACK_HOSTS
+                        if tcp_open(host, DIRECT_PORT, timeout=0.5))
         host = debug_port = pair_host = pair_port = ""
         fallback = connects[0] if connects else None
         for candidate_host, candidate_port in connects:
