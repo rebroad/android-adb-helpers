@@ -472,7 +472,10 @@ def daemon():
                 if status_notification_visible:
                     remove_notification(STATUS_NOTIFICATION_ID)
             pair_notice_key = ""; RETRY_FILE.unlink(missing_ok=True); write_state(host, debug_port, pair_host, pair_port); last_state = "connected"; time.sleep(poll_sleep); continue
-        if host and pair_port and pairing_needed:
+        # The pairing screen advertises its own mDNS endpoint. Some Android
+        # builds report a connection failure instead of an authentication
+        # failure before pairing, so do not wait for adb connect's wording.
+        if host and debug_port and pair_port:
             write_state(host, debug_port, pair_host, pair_port)
             key = f"{pair_host}:{pair_port}"
             if DESKTOP_MODE:
