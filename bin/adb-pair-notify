@@ -415,6 +415,7 @@ def daemon():
     LOCK_FILE.write_text(f"{os.getpid()}\n"); write_state("", "", "", "")
     pair_notice_key, channel_serial = "", 0
     last_state = "unknown"
+    direct_tcp_attempted = set()
     def stop(_sig, _frame):
         LOCK_FILE.unlink(missing_ok=True); INPUT_FILE.unlink(missing_ok=True); sys.exit(143)
     signal.signal(signal.SIGINT, stop); signal.signal(signal.SIGTERM, stop)
@@ -423,10 +424,16 @@ def daemon():
     while True:
         usb_endpoint = adb_usb_connection()
         discovery = discover(1)
-        connects = [(h, p) for kind, h, p in discovery if kind == "connect"]
+        wireless_connects = [(h, p) for kind, h, p in discovery if kind == "connect"]
         pairings = [(h, p) for kind, h, p in discovery if kind == "pairing"]
-        connects.extend((host, DIRECT_PORT) for host in FALLBACK_HOSTS
-                        if tcp_open(host, DIRECT_PORT, timeout=0.5))
+        direct_hosts = (["127.0.0.1"] if TERMUX_MODE else []) + FALLBACK_HOSTS
+        direct_hosts.extend(host for host, _ in wireless_connects)
+        connects = []
+        for direct_host in dict.fromkeys(direct_hosts):
+            direct_host = reachable_host(direct_host, DIRECT_PORT, prefer_loopback=True)
+            if tcp_open(direct_host, DIRECT_PORT, timeout=0.5):
+                connects.append((direct_host, DIRECT_PORT))
+        connects.extend(wireless_connects)
         host = debug_port = pair_host = pair_port = ""
         fallback = connects[0] if connects else None
         for candidate_host, candidate_port in connects:
@@ -459,6 +466,28 @@ def daemon():
                     log(f"ADB reports pairing required endpoint={endpoint} output={output!r}")
             else:
                 pairing_needed = False
+            if connected and int(debug_port) != DIRECT_PORT and endpoint not in direct_tcp_attempted:
+                direct_tcp_attempted.add(endpoint)
+                output = run(["adb", "-s", endpoint, "tcpip", str(DIRECT_PORT)], timeout=10)
+                if f"port: {DIRECT_PORT}" in output:
+                    log(f"enabled direct ADB TCP endpoint={format_endpoint(host, DIRECT_PORT)} output={output!r}")
+                    time.sleep(1)
+                    direct_host = reachable_host(host, DIRECT_PORT, prefer_loopback=True)
+                    direct_endpoint = format_endpoint(direct_host, DIRECT_PORT)
+                    direct_connected = False
+                    for attempt in range(1, 4):
+                        if attempt > 1:
+                            time.sleep(attempt - 1)
+                        output = run(["adb", "connect", direct_endpoint], timeout=8)
+                        _, direct_connected = adb_connection_state(direct_host, DIRECT_PORT)
+                        if direct_connected:
+                            log(f"ADB reconnected over direct TCP endpoint={direct_endpoint} output={output!r}")
+                            host, debug_port = direct_host, str(DIRECT_PORT)
+                            break
+                    if not direct_connected:
+                        log(f"direct ADB TCP reconnect failed endpoint={direct_endpoint}")
+                else:
+                    log(f"could not enable direct ADB TCP port={DIRECT_PORT} endpoint={endpoint} output={output!r}")
         else:
             pairing_needed = False
         if not connected and usb_endpoint:

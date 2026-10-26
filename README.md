@@ -64,9 +64,13 @@ done
 3. Open Android's **Pair device with pairing code** screen.
 4. Enter the displayed PIN in the Android notification action (Termux) or
    `zenity` dialog (XFCE4). The helper discovers both mDNS endpoints, runs
-   `adb pair`, and connects to the debugging endpoint. The desktop dialog
-   identifies the exact pairing and debugging `IP:port` endpoints before you
-   enter the PIN.
+   `adb pair`, and connects to the debugging endpoint. After that connection is
+   healthy, it enables direct TCP ADB on `ADB_PAIR_NOTIFY_DIRECT_PORT` (default
+   `5555`) and reconnects through that port. This lets ADB remain available
+   after Wireless debugging is turned off; Wireless debugging is still needed
+   to bootstrap the connection after Android resets TCP mode, such as on reboot.
+   The desktop dialog identifies the exact pairing and debugging `IP:port`
+   endpoints before you enter the PIN.
 
 The monitor retries transient discovery, pairing, and connection failures and
 logs attempts in `~/.cache/adb-pair-notify/attempt.log`. It recognizes an
