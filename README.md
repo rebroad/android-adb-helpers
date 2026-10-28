@@ -81,6 +81,11 @@ systemd unit sets `ADB_PAIR_NOTIFY_FALLBACK_HOSTS` for alternate mDNS routes
 and direct endpoint checks, `ADB_PAIR_NOTIFY_DIRECT_PORT` for the TCP ADB port,
 and `ADB_PAIR_NOTIFY_DEVICE_MODELS` to identify the intended phones.
 
+On Termux, a healthy TCP/IP ADB connection also gets an ongoing, low-priority
+notification showing the endpoint and confirming that no pairing action is
+needed. The notification is removed when the TCP/IP connection is no longer
+healthy; USB-only ADB connections do not show it.
+
 ## Other commands
 
 - `adb-mdns-discover` lists Wireless Debugging mDNS endpoints.

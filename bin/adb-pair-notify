@@ -27,7 +27,9 @@ RETRY_FILE = STATE_DIR / "retry"
 SELF = Path(__file__).resolve()
 PAIR_NOTIFICATION_ID = "adb-pair"
 STATUS_NOTIFICATION_ID = "adb-pair-status"
+TCP_NOTIFICATION_ID = "adb-pair-tcp"
 STATUS_CHANNEL_ID = "adb-pairing-status"
+TCP_CHANNEL_ID = "adb-tcp-status"
 PAIR_CHANNEL_PREFIX = "adb-pairing-pin"
 FALLBACK_HOSTS = [host.strip() for host in os.environ.get(
     "ADB_PAIR_NOTIFY_FALLBACK_HOSTS", ""
@@ -38,6 +40,7 @@ DEVICE_MODELS = {model.strip().replace("_", "-") for model in os.environ.get(
 ).split(",") if model.strip()}
 pair_notification_visible = False
 status_notification_visible = False
+tcp_notification_visible = False
 SERVICES = {"_adb-tls-pairing._tcp.local": "pairing", "_adb-tls-connect._tcp.local": "connect"}
 GROUP = "224.0.0.251"
 MDNS_PORT = 5353
@@ -62,7 +65,7 @@ def format_endpoint(host, port):
 
 
 def remove_notification(notification_id):
-    global pair_notification_visible, status_notification_visible
+    global pair_notification_visible, status_notification_visible, tcp_notification_visible
     command = shutil.which("termux-notification-remove")
     if command:
         subprocess.run([command, notification_id], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
@@ -70,10 +73,12 @@ def remove_notification(notification_id):
         pair_notification_visible = False
     elif notification_id == STATUS_NOTIFICATION_ID:
         status_notification_visible = False
+    elif notification_id == TCP_NOTIFICATION_ID:
+        tcp_notification_visible = False
 
 
 def notify(notification_id, title, content, *extra):
-    global pair_notification_visible, status_notification_visible
+    global pair_notification_visible, status_notification_visible, tcp_notification_visible
     backend = "notify-send" if DESKTOP_MODE else "termux-notification"
     command = shutil.which(backend)
     if not command:
@@ -88,6 +93,8 @@ def notify(notification_id, title, content, *extra):
         pair_notification_visible = True
     elif notification_id == STATUS_NOTIFICATION_ID:
         status_notification_visible = True
+    elif notification_id == TCP_NOTIFICATION_ID:
+        tcp_notification_visible = True
 
 
 def ensure_status_channel():
@@ -95,6 +102,13 @@ def ensure_status_channel():
     if command and subprocess.run([command, STATUS_CHANNEL_ID, "ADB pairing status"], stdout=subprocess.DEVNULL,
                                   stderr=subprocess.DEVNULL, check=False).returncode:
         log(f"notification channel setup failed: {STATUS_CHANNEL_ID}")
+
+
+def ensure_tcp_channel():
+    command = shutil.which("termux-notification-channel")
+    if command and subprocess.run([command, TCP_CHANNEL_ID, "ADB TCP connection"], stdout=subprocess.DEVNULL,
+                                  stderr=subprocess.DEVNULL, check=False).returncode:
+        log(f"notification channel setup failed: {TCP_CHANNEL_ID}")
 
 
 def ensure_pair_channel(channel_id):
@@ -115,6 +129,17 @@ def notify_status(title, content, *extra):
         return
     ensure_status_channel()
     notify(STATUS_NOTIFICATION_ID, title, content, "--channel", STATUS_CHANNEL_ID, "--priority", "default", *extra)
+
+
+def notify_tcp_connection(endpoint):
+    title = "ADB connected over TCP/IP"
+    content = f"Connected to {endpoint}; no pairing action needed"
+    if DESKTOP_MODE:
+        notify(TCP_NOTIFICATION_ID, title, content)
+        return
+    ensure_tcp_channel()
+    notify(TCP_NOTIFICATION_ID, title, content, "--channel", TCP_CHANNEL_ID,
+           "--priority", "low", "--ongoing", "--alert-once")
 
 
 def xfce_prompt(pair_host, pair_port, debug_host="", debug_port=""):
@@ -413,7 +438,7 @@ def daemon():
             os.kill(old, 0); raise SystemExit(f"monitor already running (pid {old})")
         except (OSError, ValueError): pass
     LOCK_FILE.write_text(f"{os.getpid()}\n"); write_state("", "", "", "")
-    pair_notice_key, channel_serial = "", 0
+    pair_notice_key, tcp_notice_endpoint, channel_serial = "", "", 0
     last_state = "unknown"
     direct_tcp_attempted = set()
     def stop(_sig, _frame):
@@ -450,6 +475,7 @@ def daemon():
         if input_active(): time.sleep(1); continue
         pairing_needed = False
         connected = False
+        tcp_endpoint = ""
         if host and debug_port:
             endpoint = format_endpoint(host, debug_port)
             listed, connected = adb_connection_state(host, debug_port)
@@ -490,6 +516,8 @@ def daemon():
                     log(f"could not enable direct ADB TCP port={DIRECT_PORT} endpoint={endpoint} output={output!r}")
         else:
             pairing_needed = False
+        if connected and host and debug_port:
+            tcp_endpoint = format_endpoint(host, debug_port)
         if not connected and usb_endpoint:
             if last_state != "connected":
                 log(f"healthy USB ADB transport endpoint={usb_endpoint}")
@@ -500,7 +528,19 @@ def daemon():
                     remove_notification(PAIR_NOTIFICATION_ID)
                 if status_notification_visible:
                     remove_notification(STATUS_NOTIFICATION_ID)
+            if tcp_endpoint:
+                if tcp_notice_endpoint != tcp_endpoint or not tcp_notification_visible:
+                    notify_tcp_connection(tcp_endpoint)
+                    log(f"TCP connection notification posted endpoint={tcp_endpoint}")
+                    tcp_notice_endpoint = tcp_endpoint
+            else:
+                if tcp_notification_visible or last_state != "connected":
+                    remove_notification(TCP_NOTIFICATION_ID)
+                tcp_notice_endpoint = ""
             pair_notice_key = ""; RETRY_FILE.unlink(missing_ok=True); write_state(host, debug_port, pair_host, pair_port); last_state = "connected"; time.sleep(poll_sleep); continue
+        if tcp_notification_visible or tcp_notice_endpoint or last_state in ("connected", "unknown"):
+            remove_notification(TCP_NOTIFICATION_ID)
+        tcp_notice_endpoint = ""
         # The pairing screen advertises its own mDNS endpoint. Some Android
         # builds report a connection failure instead of an authentication
         # failure before pairing, so do not wait for adb connect's wording.
@@ -527,6 +567,9 @@ def daemon():
             last_state = "pairing"
             time.sleep(poll_sleep); continue
         write_state(host, debug_port, "", ""); pair_notice_key = ""
+        if tcp_notification_visible or last_state != "unpaired":
+            remove_notification(TCP_NOTIFICATION_ID)
+        tcp_notice_endpoint = ""
         if last_state != "unpaired" and pair_notification_visible:
             remove_notification(PAIR_NOTIFICATION_ID)
         last_state = "unpaired"
